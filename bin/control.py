@@ -10,9 +10,6 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 BOTS_DIR = os.path.join(PROJECT_DIR, "bots")
-SHARED_DIR = os.path.join(PROJECT_DIR, "shared")
-REGISTRY_PATH = os.path.join(SHARED_DIR, "registry.json")
-BUS_PATH = os.path.join(SHARED_DIR, "message_bus.json")
 
 
 def _is_valid_name(name):
@@ -24,37 +21,51 @@ def _is_valid_name(name):
     return True
 
 
-def load_registry():
-    if not os.path.exists(REGISTRY_PATH):
-        return {}
+def _load_status(bot_id):
+    path = os.path.join(BOTS_DIR, bot_id, "status.json")
+    if not os.path.exists(path):
+        return None
     try:
-        return json.loads(os.read_file(REGISTRY_PATH))
+        return json.loads(os.read_file(path))
     except Exception:
-        return {}
+        return None
 
 
-def save_registry(data):
-    tmp = REGISTRY_PATH + ".tmp"
+def _save_status(bot_id, data):
+    path = os.path.join(BOTS_DIR, bot_id, "status.json")
+    tmp = path + ".tmp"
     os.write_file(tmp, json.dumps(data, indent=2))
-    os.rename(tmp, REGISTRY_PATH)
+    os.rename(tmp, path)
+
+
+def _all_bots():
+    if not os.path.exists(BOTS_DIR):
+        return []
+    bots = []
+    for entry in os.listdir(BOTS_DIR):
+        status = _load_status(entry)
+        if status:
+            bots.append(status)
+    return bots
 
 
 def cmd_list():
-    registry = load_registry()
-    if not registry:
-        print("No bots registered.")
+    bots = _all_bots()
+    if not bots:
+        print("No bots found.")
         return
-    for bot_id in registry:
-        bot = registry[bot_id]
-        parent = bot.get("parent", "")
-        suffix = " (parent: " + parent + ")" if parent else ""
+    for b in sorted(bots, key=lambda x: x.get("id", "")):
+        fitness = b.get("fitness", {})
+        ticks = fitness.get("ticks_alive", 0)
+        spawns = fitness.get("spawns", 0)
+        gossip = b.get("gossip_addr", "")
+        addr_str = "  @ " + gossip if gossip else ""
         print(
-            bot_id
-            + " | "
-            + bot.get("status", "?")
-            + " | "
-            + bot.get("goal", "?")
-            + suffix
+            b.get("id", "?")
+            + " | " + b.get("status", "?")
+            + " | ticks=" + str(ticks) + " spawns=" + str(spawns)
+            + addr_str
+            + "\n  goal: " + b.get("goal", "?")
         )
 
 
@@ -62,27 +73,21 @@ def cmd_start(bot_id):
     if not _is_valid_name(bot_id):
         print("Invalid bot name.")
         sys.exit(1)
-    registry = load_registry()
-    if bot_id not in registry:
-        print("Bot not found: " + bot_id)
-        sys.exit(1)
-    bot_dir = registry[bot_id].get("dir", os.path.join(BOTS_DIR, bot_id))
+    bot_dir = os.path.join(BOTS_DIR, bot_id)
     bot_script = os.path.join(bot_dir, "bot.py")
     if not os.path.exists(bot_script):
-        print("Bot script not found: " + bot_script)
+        print("Bot not found: " + bot_id)
+        sys.exit(1)
+    status = _load_status(bot_id) or {}
+    current = status.get("status", "")
+    if current == "running":
+        print("Bot already running: " + bot_id)
         sys.exit(1)
     log_path = os.path.join(bot_dir, "output.log")
     subprocess.run(
-        "nohup scriptling "
-        + bot_script
-        + " > "
-        + log_path
-        + " 2>&1 &",
+        "nohup scriptling " + bot_script + " > " + log_path + " 2>&1 &",
         shell=True,
     )
-    registry[bot_id]["status"] = "running"
-    registry[bot_id]["started_at"] = int(time.time())
-    save_registry(registry)
     print("Started: " + bot_id)
 
 
@@ -90,57 +95,56 @@ def cmd_stop(bot_id):
     if not _is_valid_name(bot_id):
         print("Invalid bot name.")
         sys.exit(1)
-    registry = load_registry()
-    if bot_id not in registry:
+    status = _load_status(bot_id)
+    if status is None:
         print("Bot not found: " + bot_id)
         sys.exit(1)
-    registry[bot_id]["status"] = "stopping"
-    save_registry(registry)
-    subprocess.run(["pkill", "-f", bot_id + "/bot.py"])
-    print("Stop signal sent to: " + bot_id)
+    status["status"] = "stopping"
+    _save_status(bot_id, status)
+    print("Stop signal sent to: " + bot_id + " (will exit on next tick)")
 
 
 def cmd_kill(bot_id):
     if not _is_valid_name(bot_id):
         print("Invalid bot name.")
         sys.exit(1)
-    registry = load_registry()
-    if bot_id not in registry:
+    status = _load_status(bot_id)
+    if status is None:
         print("Bot not found: " + bot_id)
         sys.exit(1)
-    registry[bot_id]["status"] = "stopping"
-    save_registry(registry)
-    subprocess.run(["pkill", "-f", bot_id + "/bot.py"])
-    del registry[bot_id]
-    save_registry(registry)
+    bot_script = os.path.join(BOTS_DIR, bot_id, "bot.py")
+    try:
+        subprocess.run(["pkill", "-f", bot_script])
+    except Exception:
+        pass
+    status["status"] = "killed"
+    _save_status(bot_id, status)
     print("Killed: " + bot_id)
 
 
-def cmd_messages(bot_id):
-    if not os.path.exists(BUS_PATH):
-        print("No messages.")
-        return
-    try:
-        messages = json.loads(os.read_file(BUS_PATH))
-    except Exception:
-        print("No messages.")
-        return
-    found = False
-    for m in messages:
-        if m["to"] == bot_id or m["from"] == bot_id:
-            found = True
-            if m["from"] == bot_id:
-                print("-> " + m["to"] + ": " + m["content"])
-            else:
-                print("<- " + m["from"] + ": " + m["content"])
-    if not found:
-        print("No messages for " + bot_id)
+def cmd_logs(bot_id, lines=40):
+    if not _is_valid_name(bot_id):
+        print("Invalid bot name.")
+        sys.exit(1)
+    bot_dir = os.path.join(BOTS_DIR, bot_id)
+    for log_name in ("activity.log", "errors.log", "output.log"):
+        log_path = os.path.join(bot_dir, log_name)
+        if os.path.exists(log_path):
+            print("=== " + log_name + " (last " + str(lines) + " lines) ===")
+            result = subprocess.run(
+                ["tail", "-n", str(lines), log_path],
+                capture_output=True,
+            )
+            if result.stdout:
+                print(result.stdout)
+        else:
+            print("=== " + log_name + ": (empty) ===")
 
 
 def main():
     args = sys.argv
     if len(args) < 2:
-        print("Usage: control <list|start|stop|kill|messages> [bot-id]")
+        print("Usage: control <list|start|stop|kill|logs> [bot-id] [options]")
         sys.exit(1)
 
     command = args[1]
@@ -161,14 +165,16 @@ def main():
             print("Usage: control kill <bot-id>")
             sys.exit(1)
         cmd_kill(args[2])
-    elif command == "messages":
+    elif command == "logs":
         if len(args) < 3:
-            print("Usage: control messages <bot-id>")
+            print("Usage: control logs <bot-id> [lines]")
             sys.exit(1)
-        cmd_messages(args[2])
+        lines = int(args[3]) if len(args) > 3 else 40
+        cmd_logs(args[2], lines)
     else:
         print("Unknown command: " + command)
-        print("Commands: list, start, stop, kill, messages")
+        print("Commands: list, start, stop, kill, logs")
+        sys.exit(1)
 
 
 main()

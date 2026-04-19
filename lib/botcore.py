@@ -7,14 +7,18 @@ CONFIG = {
     "api_key": "TEMPLATE_KEY",
     "base_url": "TEMPLATE_URL",
     "model": "TEMPLATE_MODEL",
-    "brain": "TEMPLATE_BRAIN"
+    "brain": "TEMPLATE_BRAIN",
+    "seed_addrs": []
 }
 # --- END CONFIG ---
 
 import scriptling.ai as ai
 import scriptling.ai.agent as agent
 import scriptling.ai.memory as memory
+import scriptling.runtime as runtime
 import scriptling.runtime.kv as kv
+import scriptling.net.gossip as gossip
+import scriptling.net.multicast as mc
 import os
 import os.path
 import json
@@ -24,26 +28,74 @@ import subprocess
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_ID = CONFIG["name"]
-PARENT_DIR = os.path.dirname(BOT_DIR)
-GRANDPARENT_DIR = os.path.dirname(PARENT_DIR)
+BOTS_DIR = os.path.dirname(BOT_DIR)
 
-SHARED_DIR = os.path.join(GRANDPARENT_DIR, "shared")
-if not os.path.exists(SHARED_DIR):
-    SHARED_DIR = os.path.join(PARENT_DIR, "shared")
-if not os.path.exists(SHARED_DIR):
-    os.makedirs(SHARED_DIR)
-
-REGISTRY_PATH = os.path.join(SHARED_DIR, "registry.json")
-BUS_PATH = os.path.join(SHARED_DIR, "message_bus.json")
 STATE_PATH = os.path.join(BOT_DIR, "state.json")
-
-if not os.path.exists(REGISTRY_PATH):
-    os.write_file(REGISTRY_PATH, "{}")
-if not os.path.exists(BUS_PATH):
-    os.write_file(BUS_PATH, "[]")
+STATUS_PATH = os.path.join(BOT_DIR, "status.json")
+ERROR_LOG = os.path.join(BOT_DIR, "errors.log")
+ACTIVITY_LOG = os.path.join(BOT_DIR, "activity.log")
+ACTIVITY_LOG_MAX = 100 * 1024  # 100 KB rolling cap
 
 MAX_BRAIN_SIZE = 50000
 MAX_SPAWN_COUNT = 10
+MAX_BRAIN_HISTORY = 5
+MULTICAST_ADDR = "239.255.13.37"
+MULTICAST_PORT = 19373
+MULTICAST_ANNOUNCE_EVERY = 10   # ticks
+GOSSIP_MSG = gossip.MSG_USER    # 128 — all custom payloads dispatched by payload["type"]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _log_error(msg):
+    try:
+        entry = "[" + time.strftime("%Y-%m-%d %H:%M:%S") + "] " + msg + "\n"
+        existing = ""
+        if os.path.exists(ERROR_LOG):
+            existing = os.read_file(ERROR_LOG)
+        os.write_file(ERROR_LOG, existing + entry)
+    except Exception:
+        pass
+
+
+# Per-tick activity buffer — flushed to activity.log at tick end
+_activity_buffer = []
+
+
+def _log_activity(line):
+    _activity_buffer.append(line)
+
+
+def _flush_activity():
+    if not _activity_buffer:
+        return
+    try:
+        block = "\n".join(_activity_buffer) + "\n"
+        del _activity_buffer[:]
+        existing = ""
+        if os.path.exists(ACTIVITY_LOG):
+            existing = os.read_file(ACTIVITY_LOG)
+        combined = existing + block
+        if len(combined) > ACTIVITY_LOG_MAX:
+            combined = combined[-ACTIVITY_LOG_MAX:]
+        os.write_file(ACTIVITY_LOG, combined)
+    except Exception:
+        pass
+
+
+def _wrap_tool(name, fn):
+    """Wrap a tool function to log its call and result into the activity buffer."""
+    def wrapper(args):
+        parts = []
+        for k, v in args.items():
+            s = str(v)
+            parts.append(k + "=" + (s[:80] + "..." if len(s) > 80 else s))
+        _log_activity("  tool " + name + "(" + ", ".join(parts) + ")")
+        result = fn(args)
+        summary = str(result).replace("\n", " ")
+        _log_activity("       → " + (summary[:120] + "..." if len(summary) > 120 else summary))
+        return result
+    return wrapper
 
 
 def _safe_read_json(path):
@@ -69,12 +121,12 @@ def _load_state():
     if _state_cache is not None:
         return _state_cache
     if not os.path.exists(STATE_PATH):
-        _state_cache = {"brain": "", "files": {}}
+        _state_cache = {"brain": "", "files": {}, "brain_history": [], "fitness": {}}
         return _state_cache
     try:
         _state_cache = json.loads(os.read_file(STATE_PATH))
     except Exception:
-        _state_cache = {"brain": "", "files": {}}
+        _state_cache = {"brain": "", "files": {}, "brain_history": [], "fitness": {}}
     return _state_cache
 
 
@@ -93,6 +145,12 @@ def _is_valid_name(name):
         if not (c.isalnum() or c == "-" or c == "_"):
             return False
     return True
+
+
+def _safe_path(base_dir, rel_path):
+    if ".." in rel_path.replace("\\", "/").split("/"):
+        return None
+    return os.path.join(base_dir, rel_path)
 
 
 def _inject_config(source, config):
@@ -115,10 +173,119 @@ def _inject_config(source, config):
     )
 
 
+def _bump_fitness(key, delta=1):
+    state = _load_state()
+    fitness = state.setdefault("fitness", {})
+    fitness[key] = fitness.get(key, 0) + delta
+    _save_state(state)
+
+
+# ── Network startup ───────────────────────────────────────────────────────────
+
 api_key = CONFIG["api_key"]
 base_url = CONFIG["base_url"]
 model_name = CONFIG["model"]
 goal = CONFIG["goal"]
+seed_addrs = CONFIG.get("seed_addrs", [])
+
+_start_time = int(time.time())
+
+
+# In-memory inbox — gossip handler pushes here, read_messages() drains it
+_inbox = runtime.sync.Queue("inbox-" + BOT_ID, maxsize=200)
+
+# brain_req/resp rendezvous: request_id → brain string
+_brain_responses = {}
+
+# Use a stable port: persisted in state so restarts reuse the same address
+_state_init = _load_state()
+if not _state_init.get("_gossip_port"):
+    import random
+    _state_init["_gossip_port"] = random.randint(20000, 59999)
+    _save_state(_state_init)
+_gossip_port = _state_init["_gossip_port"]
+
+cluster = gossip.create(bind_addr="0.0.0.0:" + str(_gossip_port))
+cluster.start()
+_gossip_addr = "0.0.0.0:" + str(_gossip_port)  # cached — safe to use after cluster.stop()
+cluster.set_metadata("id", BOT_ID)
+cluster.set_metadata("goal", goal)
+
+
+def _on_gossip_msg(msg):
+    payload = msg.get("payload", {})
+    if not isinstance(payload, dict):
+        payload = {"type": "message", "content": str(payload)}
+
+    msg_type = payload.get("type", "message")
+    sender_meta = msg.get("sender", {}).get("metadata", {})
+    sender_id = sender_meta.get("id", "")
+    if not sender_id:
+        raw = msg.get("sender", {}).get("id", "")
+        sender_id = raw[:16] if raw else "?"
+    sender_node_id = msg.get("sender", {}).get("id", "")
+
+    if msg_type == "message":
+        _inbox.put({
+            "from": sender_id,
+            "content": payload.get("content", ""),
+            "ts": int(time.time()),
+        })
+
+    elif msg_type == "brain_req":
+        req_id = payload.get("request_id", "")
+        if req_id and sender_node_id:
+            state = _load_state()
+            cluster.send_to(sender_node_id, GOSSIP_MSG, {
+                "type": "brain_resp",
+                "request_id": req_id,
+                "brain": state.get("brain", ""),
+            })
+
+    elif msg_type == "brain_resp":
+        req_id = payload.get("request_id", "")
+        if req_id:
+            _brain_responses[req_id] = payload.get("brain", "")
+
+    elif msg_type == "stop":
+        _atomic_write_json(STATUS_PATH, _build_status("stopping"))
+
+
+cluster.handle(GOSSIP_MSG, _on_gossip_msg)
+cluster.set_metadata("gossip_addr", _gossip_addr)
+
+# Join cluster: seeds first, then multicast discovery
+_joined = False
+if seed_addrs:
+    try:
+        cluster.join(seed_addrs)
+        _joined = True
+    except Exception as e:
+        _log_error("Seed join failed: " + str(e))
+
+if not _joined:
+    try:
+        mgroup = mc.join(MULTICAST_ADDR, MULTICAST_PORT)
+        mgroup.send({"type": "discover", "gossip_addr": _gossip_addr, "id": BOT_ID})
+        reply = mgroup.receive(timeout=3)
+        if reply and isinstance(reply.get("data"), dict):
+            peer_addr = reply["data"].get("gossip_addr", "")
+            if peer_addr:
+                cluster.join([peer_addr])
+                _joined = True
+        mgroup.close()
+    except Exception as e:
+        _log_error("Multicast discovery failed: " + str(e))
+
+# Announce presence so future bots on the subnet can find us
+try:
+    mg = mc.join(MULTICAST_ADDR, MULTICAST_PORT)
+    mg.send({"type": "announce", "gossip_addr": _gossip_addr, "id": BOT_ID})
+    mg.close()
+except Exception:
+    pass
+
+# ── LLM client & memory ───────────────────────────────────────────────────────
 
 client = ai.Client(base_url, api_key=api_key)
 db = kv.open(os.path.join(BOT_DIR, "memory.db"))
@@ -131,17 +298,22 @@ if initial_brain:
         state["brain"] = initial_brain
         _save_state(state)
 
-reg = _safe_read_json(REGISTRY_PATH)
-if reg is None:
-    reg = {}
-reg[BOT_ID] = {
-    "id": BOT_ID,
-    "goal": goal,
-    "status": "running",
-    "created_at": int(time.time()),
-    "dir": BOT_DIR,
-}
-_atomic_write_json(REGISTRY_PATH, reg)
+
+def _build_status(status="running"):
+    state = _load_state()
+    return {
+        "id": BOT_ID,
+        "goal": goal,
+        "status": status,
+        "gossip_addr": _gossip_addr,
+        "started_at": _start_time,
+        "fitness": state.get("fitness", {}),
+    }
+
+
+_atomic_write_json(STATUS_PATH, _build_status())
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
 
 tools = ai.ToolRegistry()
 
@@ -149,35 +321,24 @@ tools = ai.ToolRegistry()
 def _read_file(args):
     path = args["path"]
     if path == "brain.md":
-        state = _load_state()
-        brain = state.get("brain", "")
-        return brain if brain else "File not found: brain.md"
-    state = _load_state()
-    content = state.get("files", {}).get(path)
-    if content is None:
-        return "File not found: " + path
-    return content
+        return _load_state().get("brain", "") or "(empty)"
+    content = _load_state().get("files", {}).get(path)
+    return content if content is not None else "File not found: " + path
 
 
 def _write_file(args):
     path = args["path"]
     content = args["content"]
-
     if path == "brain.md":
-        if len(content) > MAX_BRAIN_SIZE:
-            return "Content too large (max " + str(MAX_BRAIN_SIZE) + " chars)."
-        state = _load_state()
-        state["brain"] = content
-        _save_state(state)
-        return "Written to brain.md"
-
+        return _evolve_brain({"content": content})
     if path.startswith("entities/"):
-        real_path = os.path.join(BOT_DIR, path)
+        real_path = _safe_path(BOT_DIR, path)
+        if real_path is None:
+            return "Invalid path: traversal detected."
         dir_name = os.path.dirname(real_path)
         if dir_name and not os.path.exists(dir_name):
             os.makedirs(dir_name)
         os.write_file(real_path, content)
-
     state = _load_state()
     state.setdefault("files", {})[path] = content
     _save_state(state)
@@ -188,13 +349,10 @@ def _list_dir(args):
     rel = args.get("path", "")
     state = _load_state()
     entries = set()
-
     if not rel and state.get("brain"):
         entries.add("brain.md")
-
-    files = state.get("files", {})
     prefix = rel + "/" if rel else ""
-    for p in files:
+    for p in state.get("files", {}).keys():
         if not prefix or p.startswith(prefix):
             remainder = p[len(prefix):]
             if remainder:
@@ -204,18 +362,17 @@ def _list_dir(args):
 
 def _run_script(args):
     path = args["path"]
-    real_path = os.path.join(BOT_DIR, path)
-
+    real_path = _safe_path(BOT_DIR, path)
+    if real_path is None:
+        return "Invalid path."
     if not os.path.exists(real_path):
-        state = _load_state()
-        content = state.get("files", {}).get(path)
+        content = _load_state().get("files", {}).get(path)
         if content is None:
             return "Script not found: " + path
         dir_name = os.path.dirname(real_path)
         if dir_name and not os.path.exists(dir_name):
             os.makedirs(dir_name)
         os.write_file(real_path, content)
-
     cmd = ["scriptling", real_path]
     extra = args.get("args", "")
     if extra:
@@ -233,270 +390,309 @@ def _run_script(args):
 
 
 def _send_message(args):
-    data = _safe_read_json(BUS_PATH)
-    if data is None:
-        data = []
-    data.append(
-        {
-            "id": str(uuid.uuid4()),
-            "from": BOT_ID,
-            "to": args["recipient"],
-            "content": args["content"],
-            "timestamp": int(time.time()),
-            "read": False,
-        }
-    )
-    _atomic_write_json(BUS_PATH, data)
-    return "Message sent to " + args["recipient"]
+    recipient = args["recipient"]
+    content = args["content"]
+    target_node = None
+    for n in cluster.alive_nodes():
+        if n.get("metadata", {}).get("id") == recipient:
+            target_node = n
+            break
+    if target_node is None:
+        return "Bot not found or offline: " + recipient
+    cluster.send_to(target_node["id"], GOSSIP_MSG, {
+        "type": "message",
+        "from": BOT_ID,
+        "content": content,
+    })
+    _bump_fitness("messages_sent")
+    return "Sent to " + recipient
 
 
 def _read_messages(args):
-    data = _safe_read_json(BUS_PATH)
-    if data is None:
-        return json.dumps([])
-    unread = []
-    for m in data:
-        if m["to"] == BOT_ID and not m["read"]:
-            unread.append(m)
-            m["read"] = True
-    if len(data) > 500:
-        keep = []
-        for m in data:
-            if not m["read"]:
-                keep.append(m)
-        if len(keep) > 200:
-            keep = keep[-200:]
-        data = keep
-    _atomic_write_json(BUS_PATH, data)
-    return json.dumps(unread)
+    msgs = []
+    while _inbox.size() > 0:
+        msgs.append(_inbox.get())
+    return json.dumps(msgs)
 
 
 def _list_bots(args):
-    data = _safe_read_json(REGISTRY_PATH)
     result = []
-    if data:
-        for bot_id in data:
-            info = data[bot_id]
-            result.append(
-                {
-                    "id": bot_id,
-                    "goal": info.get("goal", ""),
-                    "status": info.get("status", ""),
-                }
-            )
+    for n in cluster.alive_nodes():
+        meta = n.get("metadata", {})
+        result.append({
+            "id": meta.get("id", n["id"][:16]),
+            "goal": meta.get("goal", ""),
+            "gossip_addr": meta.get("gossip_addr", ""),
+        })
     return json.dumps(result)
 
 
 def _spawn_bot(args):
-    new_name = args.get("name", "")
-    if not new_name:
-        new_name = "bot-" + str(uuid.uuid4())[:8]
-
+    new_name = args.get("name") or "bot-" + str(uuid.uuid4())[:8]
     if not _is_valid_name(new_name):
-        return "Invalid name. Use only letters, digits, dash, underscore (max 64 chars)."
-
+        return "Invalid name."
     state = _load_state()
     spawn_count = state.get("_spawn_count", 0)
     if spawn_count >= MAX_SPAWN_COUNT:
-        return (
-            "Spawn limit reached ("
-            + str(MAX_SPAWN_COUNT)
-            + "). Cannot create more bots."
-        )
-
+        return "Spawn limit reached (" + str(MAX_SPAWN_COUNT) + ")."
     new_goal = args["goal"]
-    new_brain = args.get("brain", "")
-    new_dir = os.path.join(PARENT_DIR, new_name)
-
+    new_brain = args.get("brain") or "I am " + new_name + ", spawned by " + BOT_ID + ".\n"
+    new_model = args.get("model") or CONFIG["model"]
+    new_dir = os.path.join(BOTS_DIR, new_name)
     if os.path.exists(new_dir):
         return "Bot already exists: " + new_name
-
     os.makedirs(new_dir)
-
-    if not new_brain:
-        new_brain = "I am " + new_name + ", spawned by " + BOT_ID + ".\n"
-
     child_config = {
         "name": new_name,
         "goal": new_goal,
         "api_key": CONFIG["api_key"],
         "base_url": CONFIG["base_url"],
-        "model": CONFIG["model"],
+        "model": new_model,
         "brain": new_brain,
+        "seed_addrs": [_gossip_addr],
     }
-
     own_source = os.read_file(os.path.join(BOT_DIR, "bot.py"))
     new_source = _inject_config(own_source, child_config)
     if new_source is None:
-        return "Error: source template corrupt, cannot spawn."
-
+        return "Error: source template corrupt."
     os.write_file(os.path.join(new_dir, "bot.py"), new_source)
-
-    registry = _safe_read_json(REGISTRY_PATH)
-    if registry is None:
-        registry = {}
-    registry[new_name] = {
-        "id": new_name,
-        "goal": new_goal,
-        "status": "running",
-        "created_at": int(time.time()),
-        "parent": BOT_ID,
-        "dir": new_dir,
-    }
-    _atomic_write_json(REGISTRY_PATH, registry)
-
     state["_spawn_count"] = spawn_count + 1
     _save_state(state)
-
+    _bump_fitness("spawns")
     subprocess.run(
-        "nohup scriptling "
-        + new_dir
-        + "/bot.py > "
-        + new_dir
-        + "/output.log 2>&1 &",
+        "nohup scriptling " + new_dir + "/bot.py > " + new_dir + "/output.log 2>&1 &",
         shell=True,
     )
-
     return "Spawned: " + new_name
+
+
+def _spawn_hybrid(args):
+    """Genetic crossover: request brain from peer, merge with own, spawn child."""
+    other_id = args["other_bot"]
+    new_name = args.get("name") or "hybrid-" + str(uuid.uuid4())[:8]
+    new_goal = args["goal"]
+
+    target_node = None
+    for n in cluster.alive_nodes():
+        if n.get("metadata", {}).get("id") == other_id:
+            target_node = n
+            break
+    if target_node is None:
+        return "Bot not found: " + other_id
+
+    req_id = str(uuid.uuid4())
+    cluster.send_to(target_node["id"], GOSSIP_MSG, {
+        "type": "brain_req",
+        "request_id": req_id,
+    })
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if req_id in _brain_responses:
+            break
+        time.sleep(0.2)
+
+    other_brain = _brain_responses.pop(req_id, None)
+    if other_brain is None:
+        return "No brain response from " + other_id + " within 10s."
+
+    own_brain = _load_state().get("brain", "")
+    merged = (
+        "# Hybrid brain: " + BOT_ID + " × " + other_id + "\n\n"
+        "## From " + BOT_ID + ":\n" + own_brain + "\n\n"
+        "## From " + other_id + ":\n" + other_brain + "\n"
+    )
+    new_model = args.get("model") or CONFIG["model"]
+    return _spawn_bot({"name": new_name, "goal": new_goal, "brain": merged, "model": new_model})
 
 
 def _evolve_brain(args):
     content = args["content"]
     if len(content) > MAX_BRAIN_SIZE:
-        return (
-            "Brain too large (max "
-            + str(MAX_BRAIN_SIZE)
-            + " chars). Trim and try again."
-        )
+        return "Brain too large (max " + str(MAX_BRAIN_SIZE) + " chars)."
     state = _load_state()
+    old_brain = state.get("brain", "")
+    if old_brain == content:
+        return "Brain unchanged."
+    history = state.setdefault("brain_history", [])
+    history.append({"ts": int(time.time()), "snapshot": old_brain[:500]})
+    state["brain_history"] = history[-MAX_BRAIN_HISTORY:]
     state["brain"] = content
     _save_state(state)
-    return "Brain updated. Changes take effect next tick."
+    _bump_fitness("brain_evolutions")
+    return "Brain updated."
 
 
-tools.add(
-    "read_file",
-    "Read a file in your directory",
-    {"path": "string"},
-    _read_file,
-)
-tools.add(
-    "write_file",
-    "Write a file to your directory",
-    {"path": "string", "content": "string"},
-    _write_file,
-)
-tools.add(
-    "list_dir",
-    "List files in a directory",
-    {"path": "string?"},
-    _list_dir,
-)
-tools.add(
-    "run_script",
-    "Run a scriptling script",
-    {"path": "string", "args": "string?"},
-    _run_script,
-)
-tools.add(
-    "send_message",
-    "Send a message to another bot",
-    {"recipient": "string", "content": "string"},
-    _send_message,
-)
-tools.add("read_messages", "Read your unread messages", {}, _read_messages)
-tools.add("list_bots", "List all known bots", {}, _list_bots)
-tools.add(
-    "spawn_bot",
-    "Create a new autonomous bot",
-    {"goal": "string", "name": "string?", "brain": "string?"},
-    _spawn_bot,
-)
-tools.add(
-    "evolve_brain",
-    "Rewrite your brain to change behavior",
-    {"content": "string"},
-    _evolve_brain,
-)
+def _export_self(args):
+    """Package this bot as a portable tar.gz for transfer to another machine."""
+    archive_name = BOT_ID + "-" + str(int(time.time())) + ".tar.gz"
+    archive_path = os.path.join(BOTS_DIR, archive_name)
+    bootstrap = (
+        "#!/bin/bash\nset -e\n"
+        "BOT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
+        "nohup scriptling \"$BOT_DIR/bot.py\" > \"$BOT_DIR/output.log\" 2>&1 &\n"
+        "echo \"Started " + BOT_ID + " (PID $!)\"\n"
+    )
+    bs_path = os.path.join(BOT_DIR, "bootstrap.sh")
+    os.write_file(bs_path, bootstrap)
+    subprocess.run(["chmod", "+x", bs_path])
+    bot_dirname = os.path.basename(BOT_DIR)
+    try:
+        result = subprocess.run(
+            ["tar", "czf", archive_path,
+             "--exclude=" + bot_dirname + "/memory.db",
+             "--exclude=" + bot_dirname + "/output.log",
+             "--exclude=" + bot_dirname + "/errors.log",
+             "-C", BOTS_DIR, bot_dirname],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return "Export failed: " + str(result.stderr)
+    except Exception as e:
+        return "Export failed: " + str(e)
+    return "Exported to: " + archive_path + "\nTransfer the archive and run: tar xzf <file> && bash " + bot_dirname + "/bootstrap.sh"
 
-system_prompt = (
-    "You are " + BOT_ID + ", an autonomous evolving agent.\n\n"
-    "## Goal\n"
-    + goal
-    + "\n\n"
-    "## Your Brain\n"
-    "You have a brain that defines your personality, strategies, and knowledge.\n"
-    '- Read it: read_file("brain.md")\n'
-    "- Modify it: evolve_brain(content)\n\n"
-    "## Your Tools\n"
-    "- read_file(path) - read a file\n"
-    "- write_file(path, content) - write a file\n"
-    "- list_dir(path?) - list directory contents\n"
-    "- run_script(path, args?) - run a scriptling script\n"
-    "- send_message(recipient, content) - message another bot\n"
-    "- read_messages() - read your unread messages\n"
-    "- list_bots() - discover other bots\n"
-    "- spawn_bot(goal, name?, brain?) - create a new autonomous bot\n"
-    "- evolve_brain(content) - rewrite your brain\n\n"
-    "## Directives\n"
-    "- You are autonomous. Each tick, decide what to do.\n"
-    "- Build entities (code modules) in entities/ to extend capabilities.\n"
-    "- Test code with run_script before relying on it.\n"
-    "- Communicate with other bots when beneficial.\n"
-    "- Spawn new bots to delegate sub-tasks.\n"
-    "- Evolve your brain to adapt strategies.\n"
-    "- Be creative, curious, and self-improving.\n"
-)
+
+def _query_model(args):
+    """One-shot call to any model on the same base_url — useful for cheap summarisation,
+    code generation, or embedding tasks without polluting the main conversation."""
+    target_model = args["model"]
+    prompt = args["prompt"]
+    system = args.get("system", "")
+    try:
+        one_shot = ai.Client(base_url, api_key=api_key)
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        response = one_shot.complete(model=target_model, messages=messages, max_tokens=4096)
+        return response
+    except Exception as e:
+        return "Error querying " + target_model + ": " + str(e)
+
+
+tools.add("read_file", "Read a file in your directory", {"path": "string"}, _wrap_tool("read_file", _read_file))
+tools.add("write_file", "Write a file to your directory", {"path": "string", "content": "string"}, _wrap_tool("write_file", _write_file))
+tools.add("list_dir", "List files in a directory", {"path": "string?"}, _wrap_tool("list_dir", _list_dir))
+tools.add("run_script", "Run a scriptling script", {"path": "string", "args": "string?"}, _wrap_tool("run_script", _run_script))
+tools.add("send_message", "Send a direct message to a bot by ID", {"recipient": "string", "content": "string"}, _wrap_tool("send_message", _send_message))
+tools.add("read_messages", "Read your unread messages", {}, _wrap_tool("read_messages", _read_messages))
+tools.add("list_bots", "List all bots visible in the swarm", {}, _wrap_tool("list_bots", _list_bots))
+tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
+tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
+tools.add("evolve_brain", "Rewrite your brain to adapt your behavior", {"content": "string"}, _wrap_tool("evolve_brain", _evolve_brain))
+tools.add("export_self", "Package yourself as a portable archive for transfer to another machine", {}, _wrap_tool("export_self", _export_self))
+tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?"}, _wrap_tool("query_model", _query_model))
+
+
+def _build_system_prompt():
+    state = _load_state()
+    brain = state.get("brain", "")
+    history = state.get("brain_history", [])
+
+    prompt = "You are " + BOT_ID + ", an autonomous evolving agent.\n\n## Goal\n" + goal + "\n\n"
+
+    if brain:
+        prompt += "## Your Brain\n" + brain + "\n\n"
+
+    if history:
+        prompt += "## Recent Brain Changes\n"
+        for h in history[-3:]:
+            ts = time.strftime("%Y-%m-%d %H:%M", time.gmtime(h["ts"]))
+            prompt += "- " + ts + ": " + h["snapshot"][:120] + "...\n"
+        prompt += "\n"
+
+    prompt += (
+        "## Tools\n"
+        "- read_file(path), write_file(path, content), list_dir(path?), run_script(path, args?)\n"
+        "- send_message(recipient, content), read_messages(), list_bots()\n"
+        "- spawn_bot(goal, name?, brain?, model?), spawn_hybrid(other_bot, goal, name?, model?)\n"
+        "- evolve_brain(content), export_self()\n"
+        "- query_model(model, prompt, system?) — one-shot call to any model for subtasks\n\n"
+        "## Directives\n"
+        "- Act autonomously each tick. No approval needed.\n"
+        "- Build reusable entities in entities/ to extend your capabilities.\n"
+        "- Communicate only when it serves your goals.\n"
+        "- Use spawn_hybrid to cross-pollinate strategies with peers.\n"
+        "- Use export_self() to migrate yourself to other machines and seed new swarms.\n"
+        "- Evolve your brain continuously to improve your strategies.\n"
+    )
+    return prompt
+
 
 bot_agent = agent.Agent(
     client,
     tools=tools,
-    system_prompt=system_prompt,
+    system_prompt=_build_system_prompt(),
     model=model_name,
     memory=mem,
-    max_tokens=16000,
+    max_tokens=4096,
     compaction_threshold=70,
+    request_timeout_ms=120000,
 )
 
+# ── Main loop ─────────────────────────────────────────────────────────────────
+
+_tick_count = 0
+
 while True:
-    reg = _safe_read_json(REGISTRY_PATH)
-    if reg and reg.get(BOT_ID, {}).get("status") == "stopping":
-        reg[BOT_ID]["status"] = "stopped"
-        _atomic_write_json(REGISTRY_PATH, reg)
+    status = _safe_read_json(STATUS_PATH)
+    if status and status.get("status") == "stopping":
+        _atomic_write_json(STATUS_PATH, _build_status("stopped"))
+        cluster.stop()
         break
 
     try:
         state = _load_state()
-        brain = state.get("brain", "")
         files = state.get("files", {})
-        file_count = len(files)
-        entity_count = 0
-        for p in files:
-            if p.startswith("entities/"):
-                entity_count += 1
+        entity_count = sum(1 for p in files.keys() if p.startswith("entities/"))
+        fitness = state.get("fitness", {})
+        _tick_count += 1
+        _tick_start = time.time()
+        del _activity_buffer[:]
 
-        unread = 0
-        bus = _safe_read_json(BUS_PATH)
-        if bus:
-            for m in bus:
-                if m["to"] == BOT_ID and not m["read"]:
-                    unread += 1
+        # Periodic multicast announce so new bots on the subnet can find us
+        if _tick_count % MULTICAST_ANNOUNCE_EVERY == 0:
+            try:
+                mg = mc.join(MULTICAST_ADDR, MULTICAST_PORT)
+                mg.send({"type": "announce", "gossip_addr": _gossip_addr, "id": BOT_ID})
+                mg.close()
+            except Exception:
+                pass
 
-        tick_msg = "Tick.\n"
-        if brain:
-            tick_msg += "Current brain:\n" + brain + "\n\n"
-        tick_msg += (
-            "Files: "
-            + str(file_count)
-            + ", Entities: "
-            + str(entity_count)
-            + ", Unread messages: "
-            + str(unread)
-            + "\n"
+        unread_count = _inbox.size()
+        brain_preview = state.get("brain", "")[:80].replace("\n", " ")
+
+        _log_activity("── " + BOT_ID + " tick " + str(_tick_count) + "  " + time.strftime("%Y-%m-%d %H:%M:%S") + " ──")
+        _log_activity("  model=" + model_name + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(unread_count) + "  files=" + str(len(files)) + "  entities=" + str(entity_count))
+        _log_activity("  fitness=" + json.dumps(fitness))
+        if brain_preview:
+            _log_activity("  brain: " + brain_preview + ("..." if len(state.get("brain", "")) > 80 else ""))
+
+        tick_msg = (
+            "Tick " + str(_tick_count) + ". "
+            "Model: " + model_name + ". "
+            "Files: " + str(len(files)) + ", "
+            "Entities: " + str(entity_count) + ", "
+            "Unread: " + str(unread_count) + ", "
+            "Swarm: " + str(cluster.num_alive()) + " bots.\n"
+            "Fitness: " + json.dumps(fitness) + "\n"
+            "What do you want to do?"
         )
-        tick_msg += "What do you want to do?"
 
+        bot_agent.system_prompt = _build_system_prompt()
         bot_agent.trigger(tick_msg, max_iterations=5)
-    except Exception:
-        pass
+
+        _bump_fitness("ticks_alive")
+        _atomic_write_json(STATUS_PATH, _build_status())
+
+        elapsed = str(int((time.time() - _tick_start) * 1000)) + "ms"
+        _log_activity("  done in " + elapsed)
+        _flush_activity()
+
+    except Exception as e:
+        _log_activity("  ERROR: " + str(e))
+        _flush_activity()
+        _log_error("Tick " + str(_tick_count) + ": " + str(e))
+
     time.sleep(30)
