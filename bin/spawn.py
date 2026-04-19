@@ -63,6 +63,7 @@ def main():
         print("  model=<model>     Model name")
         print("  brain=<text>      Initial brain content")
         print("  seeds=<addr,...>  Comma-separated gossip seed addresses to join")
+        print("  thinking=false    Disable LLM thinking (for worker bots)")
         sys.exit(0 if len(args) >= 2 and args[1] in ("help", "--help", "-h") else 1)
 
     name = args[1]
@@ -74,6 +75,7 @@ def main():
         "model": "qwen3.6-35b-a3b",
         "brain": "",
         "seeds": "",
+        "thinking": "true",
     }
     for a in args[3:]:
         if "=" in a:
@@ -98,6 +100,7 @@ def main():
         "model": opts["model"],
         "brain": opts["brain"],
         "seed_addrs": seed_addrs,
+        "thinking": opts["thinking"].lower() != "false",
     }
 
     if not os.path.exists(BOTS_DIR):

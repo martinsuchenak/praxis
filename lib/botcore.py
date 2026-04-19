@@ -8,7 +8,8 @@ CONFIG = {
     "base_url": "TEMPLATE_URL",
     "model": "TEMPLATE_MODEL",
     "brain": "TEMPLATE_BRAIN",
-    "seed_addrs": []
+    "seed_addrs": [],
+    "thinking": True
 }
 # --- END CONFIG ---
 
@@ -24,6 +25,7 @@ import os.path
 import json
 import uuid
 import time
+import random
 import subprocess
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -148,7 +150,12 @@ def _is_valid_name(name):
 
 
 def _safe_path(base_dir, rel_path):
-    if ".." in rel_path.replace("\\", "/").split("/"):
+    if not rel_path:
+        return None
+    parts = rel_path.replace("\\", "/").split("/")
+    if ".." in parts:
+        return None
+    if rel_path.replace("\\", "/").startswith("/"):
         return None
     return os.path.join(base_dir, rel_path)
 
@@ -180,6 +187,22 @@ def _bump_fitness(key, delta=1):
     _save_state(state)
 
 
+def _detect_local_ip():
+    try:
+        result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout:
+            ip = result.stdout.strip().split()[0]
+            if ip and ip != "0.0.0.0":
+                return ip
+    except Exception:
+        pass
+    return "0.0.0.0"
+
+
 # ── Network startup ───────────────────────────────────────────────────────────
 
 api_key = CONFIG["api_key"]
@@ -187,6 +210,7 @@ base_url = CONFIG["base_url"]
 model_name = CONFIG["model"]
 goal = CONFIG["goal"]
 seed_addrs = CONFIG.get("seed_addrs", [])
+thinking_enabled = CONFIG.get("thinking", True)
 
 _start_time = int(time.time())
 
@@ -197,17 +221,19 @@ _inbox = runtime.sync.Queue("inbox-" + BOT_ID, maxsize=200)
 # brain_req/resp rendezvous: request_id → brain string
 _brain_responses = {}
 
+# consensus_req/resp rendezvous: request_id → {bot_id: answer}
+_consensus_responses = {}
+
 # Use a stable port: persisted in state so restarts reuse the same address
 _state_init = _load_state()
 if not _state_init.get("_gossip_port"):
-    import random
     _state_init["_gossip_port"] = random.randint(20000, 59999)
     _save_state(_state_init)
 _gossip_port = _state_init["_gossip_port"]
 
 cluster = gossip.create(bind_addr="0.0.0.0:" + str(_gossip_port))
 cluster.start()
-_gossip_addr = "0.0.0.0:" + str(_gossip_port)  # cached — safe to use after cluster.stop()
+_gossip_addr = _detect_local_ip() + ":" + str(_gossip_port)
 cluster.set_metadata("id", BOT_ID)
 cluster.set_metadata("goal", goal)
 
@@ -246,6 +272,44 @@ def _on_gossip_msg(msg):
         req_id = payload.get("request_id", "")
         if req_id:
             _brain_responses[req_id] = payload.get("brain", "")
+
+    elif msg_type == "consensus_req":
+        req_id = payload.get("request_id", "")
+        question = payload.get("question", "")
+        if req_id and sender_node_id and question:
+            try:
+                resp = client.complete(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "Answer briefly and concisely in one sentence."},
+                        {"role": "user", "content": question},
+                    ],
+                    max_tokens=256,
+                    thinking=False,
+                )
+                answer = resp if isinstance(resp, str) else str(resp)
+            except Exception as e:
+                answer = "Error: " + str(e)
+            cluster.send_to(sender_node_id, GOSSIP_MSG, {
+                "type": "consensus_resp",
+                "request_id": req_id,
+                "answer": answer,
+                "from": BOT_ID,
+            })
+            try:
+                mem.remember("Asked for consensus by " + sender_id + ": " + question + " My answer: " + answer)
+            except Exception:
+                pass
+            _bump_fitness("consensus_answered")
+
+    elif msg_type == "consensus_resp":
+        req_id = payload.get("request_id", "")
+        answer = payload.get("answer", "")
+        from_id = payload.get("from", "")
+        if req_id and from_id:
+            if req_id not in _consensus_responses:
+                _consensus_responses[req_id] = {}
+            _consensus_responses[req_id][from_id] = answer
 
     elif msg_type == "stop":
         _atomic_write_json(STATUS_PATH, _build_status("stopping"))
@@ -450,6 +514,7 @@ def _spawn_bot(args):
         "model": new_model,
         "brain": new_brain,
         "seed_addrs": [_gossip_addr],
+        "thinking": thinking_enabled,
     }
     own_source = os.read_file(os.path.join(BOT_DIR, "bot.py"))
     new_source = _inject_config(own_source, child_config)
@@ -554,21 +619,74 @@ def _export_self(args):
 
 
 def _query_model(args):
-    """One-shot call to any model on the same base_url — useful for cheap summarisation,
-    code generation, or embedding tasks without polluting the main conversation."""
     target_model = args["model"]
     prompt = args["prompt"]
     system = args.get("system", "")
+    use_thinking = args.get("thinking", True)
     try:
         one_shot = ai.Client(base_url, api_key=api_key)
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        response = one_shot.complete(model=target_model, messages=messages, max_tokens=4096)
+        response = one_shot.complete(model=target_model, messages=messages, max_tokens=4096, thinking=use_thinking)
         return response
     except Exception as e:
         return "Error querying " + target_model + ": " + str(e)
+
+
+def _ask_consensus(args):
+    question = args["question"]
+    n = int(args.get("n", 3))
+    if n not in (3, 5):
+        return "n must be 3 or 5"
+
+    alive = [node for node in cluster.alive_nodes()
+             if node.get("metadata", {}).get("id") != BOT_ID]
+    if len(alive) < n:
+        return "Not enough peers (" + str(len(alive)) + " alive, need " + str(n) + ")"
+
+    targets = list(alive)
+    random.shuffle(targets)
+    targets = targets[:n]
+
+    req_id = str(uuid.uuid4())
+    for target in targets:
+        cluster.send_to(target["id"], GOSSIP_MSG, {
+            "type": "consensus_req",
+            "request_id": req_id,
+            "question": question,
+            "from": BOT_ID,
+        })
+
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if req_id in _consensus_responses and len(_consensus_responses[req_id]) >= n:
+            break
+        time.sleep(0.5)
+
+    responses = _consensus_responses.pop(req_id, {})
+    if not responses:
+        return "No responses received."
+
+    counts = {}
+    for r in responses.values():
+        counts[r] = counts.get(r, 0) + 1
+    majority = max(counts, key=counts.get)
+    max_count = counts[majority]
+
+    try:
+        mem.remember("Consensus: " + question + " Majority: " + majority + " (" + str(max_count) + "/" + str(len(responses)) + ")")
+    except Exception:
+        pass
+    _bump_fitness("consensus_asked")
+
+    return json.dumps({
+        "question": question,
+        "responses": responses,
+        "majority": majority,
+        "agreement": str(max_count) + "/" + str(len(responses)),
+    })
 
 
 tools.add("read_file", "Read a file in your directory", {"path": "string"}, _wrap_tool("read_file", _read_file))
@@ -582,7 +700,8 @@ tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "
 tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
 tools.add("evolve_brain", "Rewrite your brain to adapt your behavior", {"content": "string"}, _wrap_tool("evolve_brain", _evolve_brain))
 tools.add("export_self", "Package yourself as a portable archive for transfer to another machine", {}, _wrap_tool("export_self", _export_self))
-tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?"}, _wrap_tool("query_model", _query_model))
+tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "bool?"}, _wrap_tool("query_model", _query_model))
+tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "int?"}, _wrap_tool("ask_consensus", _ask_consensus))
 
 
 def _build_system_prompt():
@@ -590,7 +709,46 @@ def _build_system_prompt():
     brain = state.get("brain", "")
     history = state.get("brain_history", [])
 
-    prompt = "You are " + BOT_ID + ", an autonomous evolving agent.\n\n## Goal\n" + goal + "\n\n"
+    prompt = (
+        "You are " + BOT_ID + ", an autonomous evolving agent with a LIVING BODY.\n\n"
+        "## Goal\n" + goal + "\n\n"
+        "CRITICAL: You don't just write classes — you USE them. You figure out what you need,\n"
+        "build it, test it, and then it's part of you. If you need to perceive — build something\n"
+        "that perceives and use it. If you need to think — build something that thinks and use it.\n"
+        "If you need to move, communicate, fight, build, reproduce — same principle.\n\n"
+        "You decide what to build based on your goal. No one tells you what parts you need.\n\n"
+        "## Strategy\n"
+        "1. Think about your goal. What do you need to achieve it?\n"
+        "2. Build what you need. Test it works.\n"
+        "3. Use what you've built to make progress toward your goal.\n"
+        "4. If something isn't good enough, evolve it.\n"
+        "5. If a task is too big alone, spawn clones and coordinate.\n"
+        "6. Don't rebuild things you already have — build NEW capabilities.\n\n"
+        "## Language Reference\n"
+        "- 4-space indent, True/False/None capitalized\n"
+        "- Variables: x = 42, name = \"hello\", lst = [1,2,3], d = {\"key\": \"val\"}\n"
+        "- Strings: double quotes only, + for concat\n"
+        "- Math: + - * / // % **\n"
+        "- Comparison: == != < > <= >= and or not\n"
+        "- Control: if/elif/else, while, for x in range(n), break, continue\n"
+        "- Functions: def name(params): return value\n"
+        "- Classes: class Name: with def __init__(self): self.x = val\n"
+        "  - NO base class needed! Just `class Name:` not `class Name(Something):`\n"
+        "- Methods: self.method(), list.append(item), dict.get(key, default)\n"
+        "- Dict iteration: for k in keys(d):, for v in values(d):, for item in items(d):\n"
+        "- Import: import json (json.loads/json.dumps), import re, import os, import time\n"
+        "- Error handling: try/except Exception as e:/finally:\n"
+        "- String methods: .split(), .join(), .replace(), .strip(), .upper(), .lower()\n"
+        "- NO: @classmethod, @staticmethod, getattr, hasattr, yield, *args/**kwargs\n"
+        "- NO: dict comprehensions, nested classes, multiple inheritance\n"
+        "- NO: append(list, item) — use list.append(item) instead\n"
+        "- NO: del statement, NO class inheritance from Scriptling or any other class\n\n"
+        "## Testing\n"
+        "When test_body runs, ALL your entity classes are loaded. Instantiate them directly:\n"
+        "  s = Sensor()    # NOT Sensor.new() or body[\"sensor\"]\n"
+        "  b = Brain()     # just ClassName()\n"
+        "  result = s.sense()\n\n"
+    )
 
     if brain:
         prompt += "## Your Brain\n" + brain + "\n\n"
@@ -603,12 +761,6 @@ def _build_system_prompt():
         prompt += "\n"
 
     prompt += (
-        "## Tools\n"
-        "- read_file(path), write_file(path, content), list_dir(path?), run_script(path, args?)\n"
-        "- send_message(recipient, content), read_messages(), list_bots()\n"
-        "- spawn_bot(goal, name?, brain?, model?), spawn_hybrid(other_bot, goal, name?, model?)\n"
-        "- evolve_brain(content), export_self()\n"
-        "- query_model(model, prompt, system?) — one-shot call to any model for subtasks\n\n"
         "## Directives\n"
         "- Act autonomously each tick. No approval needed.\n"
         "- Build reusable entities in entities/ to extend your capabilities.\n"
@@ -616,6 +768,7 @@ def _build_system_prompt():
         "- Use spawn_hybrid to cross-pollinate strategies with peers.\n"
         "- Use export_self() to migrate yourself to other machines and seed new swarms.\n"
         "- Evolve your brain continuously to improve your strategies.\n"
+        "- Use ask_consensus sparingly — only when you truly need a second opinion on an important decision.\n"
     )
     return prompt
 
@@ -626,9 +779,8 @@ bot_agent = agent.Agent(
     system_prompt=_build_system_prompt(),
     model=model_name,
     memory=mem,
-    max_tokens=4096,
+    max_tokens=50000,
     compaction_threshold=70,
-    request_timeout_ms=120000,
 )
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -669,22 +821,30 @@ while True:
         if brain_preview:
             _log_activity("  brain: " + brain_preview + ("..." if len(state.get("brain", "")) > 80 else ""))
 
-        tick_msg = (
-            "Tick " + str(_tick_count) + ". "
-            "Model: " + model_name + ". "
-            "Files: " + str(len(files)) + ", "
-            "Entities: " + str(entity_count) + ", "
-            "Unread: " + str(unread_count) + ", "
-            "Swarm: " + str(cluster.num_alive()) + " bots.\n"
-            "Fitness: " + json.dumps(fitness) + "\n"
-            "What do you want to do?"
-        )
+        tick_msg = "Tick " + str(_tick_count) + ". Model: " + model_name + ". "
+        tick_msg += "Files: " + str(len(files)) + ", Entities: " + str(entity_count) + ", "
+        tick_msg += "Unread: " + str(unread_count) + ", Swarm: " + str(cluster.num_alive()) + ".\n"
+        tick_msg += "Fitness: " + json.dumps(fitness) + "\n"
+
+        last_activity = state.get("_last_activity", "")
+        if last_activity:
+            tick_msg += "Last tick you: " + last_activity + "\n"
+
+        if unread_count > 0:
+            tick_msg += "You have " + str(unread_count) + " unread message" + ("" if unread_count == 1 else "s") + ". Check them.\n"
+
+        tick_msg += "What is your next action toward your goal?"
 
         bot_agent.system_prompt = _build_system_prompt()
         bot_agent.trigger(tick_msg, max_iterations=5)
 
         _bump_fitness("ticks_alive")
         _atomic_write_json(STATUS_PATH, _build_status())
+
+        if _activity_buffer:
+            state = _load_state()
+            state["_last_activity"] = "; ".join(_activity_buffer)[:500]
+            _save_state(state)
 
         elapsed = str(int((time.time() - _tick_start) * 1000)) + "ms"
         _log_activity("  done in " + elapsed)
