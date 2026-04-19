@@ -1,11 +1,13 @@
-# Evolving Agent Platform v3
+# Praxis
 
 Autonomous, self-evolving bots powered by LLMs. Each bot is a single self-contained script that can reason, build capabilities, communicate with peers, spawn children, modify its own behavior, and migrate to other machines to seed new swarms.
+
+> Built on [Scriptling](https://github.com/paularlott/scriptling) — a Python-like scripting language, created by [paularlott](https://github.com/paularlott).
 
 ## Architecture
 
 ```
-v3/
+praxis/
   lib/
     botcore.py       — Bot template (CONFIG block is replaced on spawn)
   bin/
@@ -41,20 +43,28 @@ bots/<name>/
 
 ## Usage
 
+### Configuration
+
+Create a `.env` file in the project root (or export environment variables):
+
+```bash
+BOT_API_KEY=your-key
+BOT_BASE_URL=your-openai-compatible-endpoint
+BOT_MODEL=your-model-name
+```
+
+CLI arguments (`api_key=`, `base_url=`, `model=`) override env vars if provided.
+
 ### Create a Bot
 
 ```bash
-scriptling bin/spawn.py Explorer "Explore and discover new capabilities" \
-  api_key=your-key \
-  base_url=https://llmrouter.adinko.me/v1 \
-  model=qwen/qwen3.6-35b-a3b
+scriptling bin/spawn.py Explorer "Explore and discover new capabilities"
 ```
 
 With seeds (join an existing swarm on another machine):
 
 ```bash
 scriptling bin/spawn.py Scout "Scout the environment" \
-  api_key=your-key \
   seeds=192.168.1.10:37291
 ```
 
