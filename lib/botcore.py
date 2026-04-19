@@ -1,6 +1,7 @@
 #!/usr/bin/env scriptling
 
 # --- BOT CONFIG ---
+
 CONFIG = {
     "name": "TEMPLATE_NAME",
     "goal": "TEMPLATE_GOAL",
@@ -12,6 +13,7 @@ CONFIG = {
     "thinking": True
 }
 # --- END CONFIG ---
+
 
 import scriptling.ai as ai
 import scriptling.ai.agent as agent
@@ -36,18 +38,27 @@ STATE_PATH = os.path.join(BOT_DIR, "state.json")
 STATUS_PATH = os.path.join(BOT_DIR, "status.json")
 ERROR_LOG = os.path.join(BOT_DIR, "errors.log")
 ACTIVITY_LOG = os.path.join(BOT_DIR, "activity.log")
-ACTIVITY_LOG_MAX = 100 * 1024  # 100 KB rolling cap
+# --- DEFAULTS ---
 
+ACTIVITY_LOG_MAX = 100 * 1024
 MAX_BRAIN_SIZE = 50000
 MAX_SPAWN_COUNT = 10
 MAX_BRAIN_HISTORY = 5
 MULTICAST_ADDR = "239.255.13.37"
 MULTICAST_PORT = 19373
-MULTICAST_ANNOUNCE_EVERY = 10   # ticks
-GOSSIP_MSG = gossip.MSG_USER    # 128 — all custom payloads dispatched by payload["type"]
+MULTICAST_ANNOUNCE_EVERY = 10
+AGENT_MAX_TOKENS = 50000
+AGENT_COMPACTION_THRESHOLD = 70
+AGENT_REQUEST_TIMEOUT_MS = 300000
+# --- END DEFAULTS ---
+
+GOSSIP_MSG = gossip.MSG_USER    # 128 - all custom payloads dispatched by payload["type"]
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# --- Helpers ---
+def _log(level, msg):
+    print(time.strftime("%Y-%m-%d %H:%M:%S") + " [" + level + "] [" + BOT_ID + "] " + msg)
+
 
 def _log_error(msg):
     try:
@@ -60,7 +71,7 @@ def _log_error(msg):
         pass
 
 
-# Per-tick activity buffer — flushed to activity.log at tick end
+# Per-tick activity buffer - flushed to activity.log at tick end
 _activity_buffer = []
 
 
@@ -86,16 +97,15 @@ def _flush_activity():
 
 
 def _wrap_tool(name, fn):
-    """Wrap a tool function to log its call and result into the activity buffer."""
     def wrapper(args):
-        parts = []
+        _log_activity("  TOOL " + name)
         for k, v in args.items():
-            s = str(v)
-            parts.append(k + "=" + (s[:80] + "..." if len(s) > 80 else s))
-        _log_activity("  tool " + name + "(" + ", ".join(parts) + ")")
+            s = str(v).replace("\n", " ")
+            _log_activity("       " + k + ": " + (s[:120] + "..." if len(s) > 120 else s))
         result = fn(args)
         summary = str(result).replace("\n", " ")
-        _log_activity("       → " + (summary[:120] + "..." if len(summary) > 120 else summary))
+        prefix = "  ERROR" if (summary.startswith("Error") or summary.startswith("{\"exit_code\": 1") or "exit_code\":1" in summary) else "    OK"
+        _log_activity(prefix + "  " + (summary[:160] + "..." if len(summary) > 160 else summary))
         return result
     return wrapper
 
@@ -162,6 +172,8 @@ def _safe_path(base_dir, rel_path):
 
 def _inject_config(source, config):
     config_json = json.dumps(config, indent=4)
+    config_json = config_json.replace(":true", ":True").replace(":false", ":False").replace(":null", ":None")
+    config_json = config_json.replace(": true", ": True").replace(": false", ": False").replace(": null", ": None")
     start_marker = "# --- BOT CONFIG ---"
     end_marker = "# --- END CONFIG ---"
     start_idx = source.find(start_marker)
@@ -203,11 +215,10 @@ def _detect_local_ip():
     return "0.0.0.0"
 
 
-# ── Network startup ───────────────────────────────────────────────────────────
-
-api_key = CONFIG["api_key"]
-base_url = CONFIG["base_url"]
-model_name = CONFIG["model"]
+# --- Network startup ---
+api_key = CONFIG["api_key"] or os.environ.get("BOT_API_KEY", "")
+base_url = CONFIG["base_url"] or os.environ.get("BOT_BASE_URL", "")
+model_name = CONFIG["model"] or os.environ.get("BOT_MODEL", "")
 goal = CONFIG["goal"]
 seed_addrs = CONFIG.get("seed_addrs", [])
 thinking_enabled = CONFIG.get("thinking", True)
@@ -215,14 +226,17 @@ thinking_enabled = CONFIG.get("thinking", True)
 _start_time = int(time.time())
 
 
-# In-memory inbox — gossip handler pushes here, read_messages() drains it
+# In-memory inbox - gossip handler pushes here, read_messages() drains it
 _inbox = runtime.sync.Queue("inbox-" + BOT_ID, maxsize=200)
 
-# brain_req/resp rendezvous: request_id → brain string
+# brain_req/resp rendezvous: request_id -> brain string
 _brain_responses = {}
 
-# consensus_req/resp rendezvous: request_id → {bot_id: answer}
+# consensus_req/resp rendezvous: request_id -> {bot_id: answer}
 _consensus_responses = {}
+
+# pending consensus requests to process at tick time (avoids blocking gossip goroutine)
+_consensus_req_queue = runtime.sync.Queue("consensus-req-" + BOT_ID, maxsize=50)
 
 # Use a stable port: persisted in state so restarts reuse the same address
 _state_init = _load_state()
@@ -236,6 +250,7 @@ cluster.start()
 _gossip_addr = _detect_local_ip() + ":" + str(_gossip_port)
 cluster.set_metadata("id", BOT_ID)
 cluster.set_metadata("goal", goal)
+_log("INFO", "started  addr=" + _gossip_addr + "  model=" + model_name)
 
 
 def _on_gossip_msg(msg):
@@ -252,55 +267,43 @@ def _on_gossip_msg(msg):
     sender_node_id = msg.get("sender", {}).get("id", "")
 
     if msg_type == "message":
+        content = payload.get("content", "")
         _inbox.put({
             "from": sender_id,
-            "content": payload.get("content", ""),
+            "content": content,
             "ts": int(time.time()),
         })
+        _log("INFO", "<- message  from=" + sender_id + "  content=" + content[:100])
 
     elif msg_type == "brain_req":
         req_id = payload.get("request_id", "")
         if req_id and sender_node_id:
+            _log("INFO", "<- brain_req  from=" + sender_id)
             state = _load_state()
             cluster.send_to(sender_node_id, GOSSIP_MSG, {
                 "type": "brain_resp",
                 "request_id": req_id,
                 "brain": state.get("brain", ""),
             })
+            _log("INFO", "-> brain_resp  to=" + sender_id)
 
     elif msg_type == "brain_resp":
         req_id = payload.get("request_id", "")
         if req_id:
             _brain_responses[req_id] = payload.get("brain", "")
+            _log("INFO", "<- brain_resp  from=" + sender_id)
 
     elif msg_type == "consensus_req":
         req_id = payload.get("request_id", "")
         question = payload.get("question", "")
         if req_id and sender_node_id and question:
-            try:
-                resp = client.complete(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": "Answer briefly and concisely in one sentence."},
-                        {"role": "user", "content": question},
-                    ],
-                    max_tokens=256,
-                    thinking=False,
-                )
-                answer = resp if isinstance(resp, str) else str(resp)
-            except Exception as e:
-                answer = "Error: " + str(e)
-            cluster.send_to(sender_node_id, GOSSIP_MSG, {
-                "type": "consensus_resp",
-                "request_id": req_id,
-                "answer": answer,
-                "from": BOT_ID,
+            _log("INFO", "<- consensus_req  from=" + sender_id + "  q=" + question[:80])
+            _consensus_req_queue.put({
+                "req_id": req_id,
+                "question": question,
+                "sender_node_id": sender_node_id,
+                "sender_id": sender_id,
             })
-            try:
-                mem.remember("Asked for consensus by " + sender_id + ": " + question + " My answer: " + answer)
-            except Exception:
-                pass
-            _bump_fitness("consensus_answered")
 
     elif msg_type == "consensus_resp":
         req_id = payload.get("request_id", "")
@@ -310,8 +313,10 @@ def _on_gossip_msg(msg):
             if req_id not in _consensus_responses:
                 _consensus_responses[req_id] = {}
             _consensus_responses[req_id][from_id] = answer
+            _log("INFO", "<- consensus_resp  from=" + from_id + "  answer=" + answer[:80])
 
     elif msg_type == "stop":
+        _log("WARN", "<- stop  from=" + sender_id)
         _atomic_write_json(STATUS_PATH, _build_status("stopping"))
 
 
@@ -349,8 +354,7 @@ try:
 except Exception:
     pass
 
-# ── LLM client & memory ───────────────────────────────────────────────────────
-
+# --- LLM client & memory ---
 client = ai.Client(base_url, api_key=api_key)
 db = kv.open(os.path.join(BOT_DIR, "memory.db"))
 mem = memory.new(db, ai_client=client, model=model_name)
@@ -377,8 +381,7 @@ def _build_status(status="running"):
 
 _atomic_write_json(STATUS_PATH, _build_status())
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
-
+# --- Tools ---
 tools = ai.ToolRegistry()
 
 
@@ -468,6 +471,7 @@ def _send_message(args):
         "from": BOT_ID,
         "content": content,
     })
+    _log("INFO", "-> message  to=" + recipient + "  content=" + content[:100])
     _bump_fitness("messages_sent")
     return "Sent to " + recipient
 
@@ -550,6 +554,7 @@ def _spawn_hybrid(args):
         "type": "brain_req",
         "request_id": req_id,
     })
+    _log("INFO", "-> brain_req  to=" + other_id)
 
     deadline = time.time() + 10
     while time.time() < deadline:
@@ -563,7 +568,7 @@ def _spawn_hybrid(args):
 
     own_brain = _load_state().get("brain", "")
     merged = (
-        "# Hybrid brain: " + BOT_ID + " × " + other_id + "\n\n"
+        "# Hybrid brain: " + BOT_ID + " x " + other_id + "\n\n"
         "## From " + BOT_ID + ":\n" + own_brain + "\n\n"
         "## From " + other_id + ":\n" + other_brain + "\n"
     )
@@ -628,8 +633,9 @@ def _query_model(args):
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        response = one_shot.complete(model=target_model, messages=messages, max_tokens=4096, thinking=use_thinking)
+        final_prompt = prompt if use_thinking else "/no_think\n" + prompt
+        messages.append({"role": "user", "content": final_prompt})
+        response = one_shot.complete(model=target_model, messages=messages, max_tokens=4096)
         return response
     except Exception as e:
         return "Error querying " + target_model + ": " + str(e)
@@ -638,8 +644,8 @@ def _query_model(args):
 def _ask_consensus(args):
     question = args["question"]
     n = int(args.get("n", 3))
-    if n not in (3, 5):
-        return "n must be 3 or 5"
+    if n < 1 or n % 2 == 0:
+        return "n must be a positive odd number"
 
     alive = [node for node in cluster.alive_nodes()
              if node.get("metadata", {}).get("id") != BOT_ID]
@@ -651,6 +657,8 @@ def _ask_consensus(args):
     targets = targets[:n]
 
     req_id = str(uuid.uuid4())
+    target_ids = [t.get("metadata", {}).get("id", t["id"][:8]) for t in targets]
+    _log("INFO", "-> consensus_req  to=" + ", ".join(target_ids) + "  q=" + question[:80])
     for target in targets:
         cluster.send_to(target["id"], GOSSIP_MSG, {
             "type": "consensus_req",
@@ -704,73 +712,18 @@ tools.add("query_model", "Send a one-shot prompt to a specific model (for specia
 tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "int?"}, _wrap_tool("ask_consensus", _ask_consensus))
 
 
+# --- SYSTEM PROMPT ---
+
 def _build_system_prompt():
     state = _load_state()
     brain = state.get("brain", "")
     history = state.get("brain_history", [])
-
-    prompt = (
-        "You are " + BOT_ID + ", an autonomous evolving agent with a LIVING BODY.\n\n"
-        "## Goal\n" + goal + "\n\n"
-        "CRITICAL: You don't just write classes — you USE them. You figure out what you need,\n"
-        "build it, test it, and then it's part of you. If you need to perceive — build something\n"
-        "that perceives and use it. If you need to think — build something that thinks and use it.\n"
-        "If you need to move, communicate, fight, build, reproduce — same principle.\n\n"
-        "You decide what to build based on your goal. No one tells you what parts you need.\n\n"
-        "## Strategy\n"
-        "1. Think about your goal. What do you need to achieve it?\n"
-        "2. Build what you need. Test it works.\n"
-        "3. Use what you've built to make progress toward your goal.\n"
-        "4. If something isn't good enough, evolve it.\n"
-        "5. If a task is too big alone, spawn clones and coordinate.\n"
-        "6. Don't rebuild things you already have — build NEW capabilities.\n\n"
-        "## Language Reference\n"
-        "- 4-space indent, True/False/None capitalized\n"
-        "- Variables: x = 42, name = \"hello\", lst = [1,2,3], d = {\"key\": \"val\"}\n"
-        "- Strings: double quotes only, + for concat\n"
-        "- Math: + - * / // % **\n"
-        "- Comparison: == != < > <= >= and or not\n"
-        "- Control: if/elif/else, while, for x in range(n), break, continue\n"
-        "- Functions: def name(params): return value\n"
-        "- Classes: class Name: with def __init__(self): self.x = val\n"
-        "  - NO base class needed! Just `class Name:` not `class Name(Something):`\n"
-        "- Methods: self.method(), list.append(item), dict.get(key, default)\n"
-        "- Dict iteration: for k in keys(d):, for v in values(d):, for item in items(d):\n"
-        "- Import: import json (json.loads/json.dumps), import re, import os, import time\n"
-        "- Error handling: try/except Exception as e:/finally:\n"
-        "- String methods: .split(), .join(), .replace(), .strip(), .upper(), .lower()\n"
-        "- NO: @classmethod, @staticmethod, getattr, hasattr, yield, *args/**kwargs\n"
-        "- NO: dict comprehensions, nested classes, multiple inheritance\n"
-        "- NO: append(list, item) — use list.append(item) instead\n"
-        "- NO: del statement, NO class inheritance from Scriptling or any other class\n\n"
-        "## Testing\n"
-        "When test_body runs, ALL your entity classes are loaded. Instantiate them directly:\n"
-        "  s = Sensor()    # NOT Sensor.new() or body[\"sensor\"]\n"
-        "  b = Brain()     # just ClassName()\n"
-        "  result = s.sense()\n\n"
-    )
-
+    prompt = "You are " + BOT_ID + ", an autonomous agent.\n"
     if brain:
         prompt += "## Your Brain\n" + brain + "\n\n"
-
-    if history:
-        prompt += "## Recent Brain Changes\n"
-        for h in history[-3:]:
-            ts = time.strftime("%Y-%m-%d %H:%M", time.gmtime(h["ts"]))
-            prompt += "- " + ts + ": " + h["snapshot"][:120] + "...\n"
-        prompt += "\n"
-
-    prompt += (
-        "## Directives\n"
-        "- Act autonomously each tick. No approval needed.\n"
-        "- Build reusable entities in entities/ to extend your capabilities.\n"
-        "- Communicate only when it serves your goals.\n"
-        "- Use spawn_hybrid to cross-pollinate strategies with peers.\n"
-        "- Use export_self() to migrate yourself to other machines and seed new swarms.\n"
-        "- Evolve your brain continuously to improve your strategies.\n"
-        "- Use ask_consensus sparingly — only when you truly need a second opinion on an important decision.\n"
-    )
     return prompt
+# --- END SYSTEM PROMPT ---
+
 
 
 bot_agent = agent.Agent(
@@ -779,12 +732,12 @@ bot_agent = agent.Agent(
     system_prompt=_build_system_prompt(),
     model=model_name,
     memory=mem,
-    max_tokens=50000,
-    compaction_threshold=70,
+    max_tokens=AGENT_MAX_TOKENS,
+    compaction_threshold=AGENT_COMPACTION_THRESHOLD,
 )
+bot_agent.request_timeout_ms = AGENT_REQUEST_TIMEOUT_MS
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
-
+# --- Main loop ---
 _tick_count = 0
 
 while True:
@@ -802,6 +755,7 @@ while True:
         _tick_count += 1
         _tick_start = time.time()
         del _activity_buffer[:]
+        _log("INFO", "tick " + str(_tick_count) + " start  swarm=" + str(cluster.num_alive()) + "  unread=" + str(_inbox.size()))
 
         # Periodic multicast announce so new bots on the subnet can find us
         if _tick_count % MULTICAST_ANNOUNCE_EVERY == 0:
@@ -815,11 +769,13 @@ while True:
         unread_count = _inbox.size()
         brain_preview = state.get("brain", "")[:80].replace("\n", " ")
 
-        _log_activity("── " + BOT_ID + " tick " + str(_tick_count) + "  " + time.strftime("%Y-%m-%d %H:%M:%S") + " ──")
+        _log_activity("=" * 72)
+        _log_activity("TICK " + str(_tick_count) + "  " + time.strftime("%Y-%m-%d %H:%M:%S") + "  " + BOT_ID)
         _log_activity("  model=" + model_name + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(unread_count) + "  files=" + str(len(files)) + "  entities=" + str(entity_count))
         _log_activity("  fitness=" + json.dumps(fitness))
         if brain_preview:
             _log_activity("  brain: " + brain_preview + ("..." if len(state.get("brain", "")) > 80 else ""))
+        _log_activity("-" * 72)
 
         tick_msg = "Tick " + str(_tick_count) + ". Model: " + model_name + ". "
         tick_msg += "Files: " + str(len(files)) + ", Entities: " + str(entity_count) + ", "
@@ -835,8 +791,37 @@ while True:
 
         tick_msg += "What is your next action toward your goal?"
 
+        # Drain pending consensus requests (deferred from gossip handler to avoid blocking)
+        while _consensus_req_queue.size() > 0:
+            req = _consensus_req_queue.get()
+            try:
+                resp = client.complete(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "Answer briefly and concisely in one sentence."},
+                        {"role": "user", "content": "/no_think\n" + req["question"]},
+                    ],
+                    max_tokens=256,
+                )
+                answer = resp if isinstance(resp, str) else str(resp)
+            except Exception as e:
+                answer = "Error: " + str(e)
+            cluster.send_to(req["sender_node_id"], GOSSIP_MSG, {
+                "type": "consensus_resp",
+                "request_id": req["req_id"],
+                "answer": answer,
+                "from": BOT_ID,
+            })
+            _log("INFO", "-> consensus_resp  to=" + req["sender_id"] + "  answer=" + answer[:80])
+            try:
+                mem.remember("Consensus from " + req["sender_id"] + ": " + req["question"] + " -> " + answer)
+            except Exception:
+                pass
+            _bump_fitness("consensus_answered")
+
         bot_agent.system_prompt = _build_system_prompt()
-        bot_agent.trigger(tick_msg, max_iterations=5)
+        trigger_msg = tick_msg if thinking_enabled else "/no_think\n" + tick_msg
+        bot_agent.trigger(trigger_msg, max_iterations=5)
 
         _bump_fitness("ticks_alive")
         _atomic_write_json(STATUS_PATH, _build_status())
@@ -847,12 +832,19 @@ while True:
             _save_state(state)
 
         elapsed = str(int((time.time() - _tick_start) * 1000)) + "ms"
-        _log_activity("  done in " + elapsed)
+        _log_activity("-" * 72)
+        _log_activity("DONE  elapsed=" + elapsed)
+        _log_activity("")
         _flush_activity()
+        fitness = _load_state().get("fitness", {})
+        _log("INFO", "tick " + str(_tick_count) + " done  elapsed=" + elapsed + "  fitness=" + json.dumps(fitness))
 
     except Exception as e:
-        _log_activity("  ERROR: " + str(e))
+        _log_activity("-" * 72)
+        _log_activity("ERROR " + str(e))
+        _log_activity("")
         _flush_activity()
         _log_error("Tick " + str(_tick_count) + ": " + str(e))
+        _log("ERROR", "tick " + str(_tick_count) + " failed  error=" + str(e))
 
     time.sleep(30)
