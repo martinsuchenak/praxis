@@ -52,6 +52,10 @@ AGENT_COMPACTION_THRESHOLD = 70
 AGENT_REQUEST_TIMEOUT_MS = 300000
 # --- END DEFAULTS ---
 
+# --- MODELS ---
+AVAILABLE_MODELS = []
+# --- END MODELS ---
+
 GOSSIP_MSG = gossip.MSG_USER    # 128 - all custom payloads dispatched by payload["type"]
 
 
@@ -641,6 +645,12 @@ def _query_model(args):
         return "Error querying " + target_model + ": " + str(e)
 
 
+def _list_models(args):
+    if not AVAILABLE_MODELS:
+        return "No additional models available."
+    return json.dumps(AVAILABLE_MODELS)
+
+
 def _ask_consensus(args):
     question = args["question"]
     n = int(args.get("n", 3))
@@ -709,6 +719,7 @@ tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a c
 tools.add("evolve_brain", "Rewrite your brain to adapt your behavior", {"content": "string"}, _wrap_tool("evolve_brain", _evolve_brain))
 tools.add("export_self", "Package yourself as a portable archive for transfer to another machine", {}, _wrap_tool("export_self", _export_self))
 tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "bool?"}, _wrap_tool("query_model", _query_model))
+tools.add("list_models", "List available models with descriptions, costs, and strengths", {}, _wrap_tool("list_models", _list_models))
 tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "int?"}, _wrap_tool("ask_consensus", _ask_consensus))
 
 

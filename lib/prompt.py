@@ -56,6 +56,22 @@ def _build_system_prompt():
             prompt += "- " + ts + ": " + h["snapshot"][:300] + "\n"
         prompt += "\n"
 
+    if AVAILABLE_MODELS:
+        prompt += "## Available Models\n"
+        prompt += "You are running on: " + model_name + "\n\n"
+        prompt += "Use `query_model(model, prompt)` for one-shot calls or `model=` in spawn_bot/spawn_hybrid to assign a model to a child.\n\n"
+        for m in AVAILABLE_MODELS:
+            prompt += "- **" + m["id"] + "**"
+            if m.get("label"):
+                prompt += " (" + m["label"] + ")"
+            prompt += " — " + m.get("description", "")
+            if m.get("cost"):
+                prompt += " Cost: " + m["cost"] + "."
+            if m.get("strengths"):
+                prompt += " Strengths: " + ", ".join(m["strengths"]) + "."
+            prompt += "\n"
+        prompt += "\n"
+
     prompt += (
         "## Directives\n"
         "- Act autonomously each tick. No approval needed.\n"

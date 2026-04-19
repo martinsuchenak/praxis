@@ -1,0 +1,16 @@
+[
+  {
+    "id": "qwen/qwen3.6-35b-a3b",
+    "label": "Qwen 3.6 35B",
+    "description": "Small, fast model. Good for quick fixes, summaries, formatting, and simple tasks.",
+    "cost": "low",
+    "strengths": ["fast", "simple tasks", "formatting", "summaries", "quick fixes"]
+  },
+  {
+    "id": "qwen/qwen3-235b-a22b",
+    "label": "Qwen 3 235B",
+    "description": "Large reasoning model for complex analysis, architecture decisions, and multi-step planning.",
+    "cost": "high",
+    "strengths": ["reasoning", "complex analysis", "planning", "architecture", "code generation"]
+  }
+]

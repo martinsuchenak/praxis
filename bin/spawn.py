@@ -13,6 +13,7 @@ TEMPLATE_PATH = os.path.join(PROJECT_DIR, "lib", "botcore.py")
 DEFAULTS_PATH = os.path.join(PROJECT_DIR, "lib", "defaults.py")
 PROMPT_PATH = os.path.join(PROJECT_DIR, "lib", "prompt.py")
 ENV_FILE = os.path.join(PROJECT_DIR, ".env")
+MODELS_PATH = os.path.join(PROJECT_DIR, "models.json")
 
 
 def _load_dotenv():
@@ -178,6 +179,19 @@ def main():
     source = _inject_block(source, "# --- SYSTEM PROMPT ---", "# --- END SYSTEM PROMPT ---", prompt_src)
     if source is None:
         print("Error: bot template is missing SYSTEM PROMPT markers.")
+        sys.exit(1)
+
+    models_block = "AVAILABLE_MODELS = []"
+    if os.path.exists(MODELS_PATH):
+        try:
+            models_data = json.loads(os.read_file(MODELS_PATH))
+            if models_data:
+                models_block = "AVAILABLE_MODELS = " + json.dumps(models_data, indent=4)
+        except Exception:
+            pass
+    source = _inject_block(source, "# --- MODELS ---", "# --- END MODELS ---", models_block)
+    if source is None:
+        print("Error: bot template is missing MODELS markers.")
         sys.exit(1)
 
     os.makedirs(bot_dir)

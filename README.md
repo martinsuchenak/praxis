@@ -14,6 +14,7 @@ praxis/
     spawn.py         — CLI: create new bots
     control.py       — CLI: manage bots (list, start, stop, kill, logs, send)
   bots/              — One directory per bot (runtime-created)
+  models.example.json — Example model catalog (copy to models.json to use)
   README.md
 ```
 
@@ -54,6 +55,35 @@ BOT_MODEL=your-model-name
 ```
 
 CLI arguments (`api_key=`, `base_url=`, `model=`) override env vars if provided.
+
+### Model Catalog (optional)
+
+Create a `models.json` file (see `models.example.json` for the format) to give bots awareness of other models they can use:
+
+```json
+[
+  {
+    "id": "qwen/qwen3.6-35b-a3b",
+    "label": "Qwen 3.6 35B",
+    "description": "Small, fast model. Good for quick fixes, summaries, formatting.",
+    "cost": "low",
+    "strengths": ["fast", "simple tasks", "formatting", "summaries"]
+  },
+  {
+    "id": "qwen/qwen3-235b-a22b",
+    "label": "Qwen 3 235B",
+    "description": "Large reasoning model for complex analysis and multi-step planning.",
+    "cost": "high",
+    "strengths": ["reasoning", "complex analysis", "planning", "architecture"]
+  }
+]
+```
+
+Each entry has: `id` (model name matching your API), `label` (human-readable), `description` (what it's good for), `cost` (low/medium/high), and `strengths` (tag list).
+
+When present, bots get an **Available Models** section in their system prompt and a `list_models` tool. They can then use `query_model` for one-shot calls to a specific model or pass `model=` when spawning children. The model catalog is baked into each bot's source so child and migrated bots carry it forward.
+
+If `models.json` is absent, bots only know their own model and `list_models` reports no additional models available.
 
 ### Create a Bot
 
@@ -186,7 +216,7 @@ Each peer answers independently using its own LLM (without thinking mode, for sp
 
 ### Multi-Model Usage
 
-Every bot knows its own model (shown in each tick message). Two complementary mechanisms:
+Every bot knows its own model (shown in each tick message). If a `models.json` catalog is configured, bots also see all available models with descriptions and strengths in their system prompt. Two complementary mechanisms:
 
 **Model as genome** — `spawn_bot` and `spawn_hybrid` accept an optional `model` parameter. Children can run on a different model than their parent. Combined with fitness tracking, this creates natural selection: if bots on one model consistently spawn/communicate/evolve more, the swarm drifts toward that model over generations without any explicit selection logic.
 
@@ -218,6 +248,7 @@ The bot starts, uses its embedded `seed_addrs` to rejoin the original swarm (if 
 | `evolve_brain` | content | Rewrite your brain |
 | `export_self` | — | Package for transfer to another machine |
 | `query_model` | model, prompt, system?, thinking? | One-shot call to any model for a subtask |
+| `list_models` | — | List available models with descriptions and strengths |
 | `ask_consensus` | question, n? | Poll n peers and return the majority answer |
 
 Plus 3 memory tools auto-registered by the Agent: `memory_remember`, `memory_recall`, `memory_forget`.
