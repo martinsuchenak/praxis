@@ -26,14 +26,16 @@ No shared directory. Bots coordinate entirely through the gossip cluster.
 
 ```
 bots/<name>/
-  bot.py         — Self-contained agent (config + full runtime, injected at spawn)
-  state.json     — Brain, virtual filesystem, fitness, brain history
-  status.json    — Live status written each tick (read by control.py)
-  memory.db/     — Persistent KV memory store
-  output.log     — stdout/stderr from nohup
-  errors.log     — Tick errors with timestamps
-  activity.log   — Per-tick trace: inputs, tool calls, results (rolling 100 KB)
-  entities/      — All files the bot writes (plans, knowledge, scripts, data, ...)
+  bot.py              — Self-contained agent (config + full runtime, injected at spawn)
+  brain.md            — Current brain (system prompt addendum, updated by evolve_brain)
+  brain_history.json  — Last 5 brain snapshots
+  state.json          — Operational state: fitness counters, gossip port, last activity
+  status.json         — Live status written each tick (read by control.py)
+  memory.db/          — Persistent KV memory store
+  output.log          — stdout/stderr from nohup
+  errors.log          — Tick errors with timestamps
+  activity.log        — Per-tick trace: inputs, tool calls, results (rolling 100 KB)
+  entities/           — All files the bot writes (plans, knowledge, scripts, data, ...)
 ```
 
 ### Core Technologies
@@ -323,6 +325,7 @@ Plus 3 memory tools auto-registered by the Agent: `memory_remember`, `memory_rec
 - **No shared filesystem** — registry and messaging are entirely gossip-based; bots on different machines are peers.
 - **Brain in system prompt** — the brain has stable priority over tick context and isn't consumed by compaction.
 - **Per-bot status.json** — written each tick; `control.py` reads it without any shared file or locking.
+- **Brain and history on disk** — `brain.md` and `brain_history.json` live as plain files alongside the bot, not inside `state.json`. Brain updates don't rewrite the full state. `state.json` only holds fitness counters, gossip port, and last-tick activity summary. Existing bots with old-style state.json are automatically migrated on first startup.
 - **pkill-based kill** — `control kill` uses `pkill -f` with the bot's full absolute path, avoiding substring collisions.
 - **Path traversal guard** — `_safe_path` rejects `..` components and absolute paths to keep bots within their own directory.
 - **Activity log** — every tick writes a structured trace to `activity.log` (tool name, args, result summary) with a rolling 100 KB cap; use `control logs` or `control tail` to inspect what a bot is doing.

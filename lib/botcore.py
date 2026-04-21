@@ -143,18 +143,93 @@ def _atomic_write_json(path, data):
 _state_cache = None
 
 
+BRAIN_PATH = os.path.join(BOT_DIR, "brain.md")
+BRAIN_HISTORY_PATH = os.path.join(BOT_DIR, "brain_history.json")
+
+
 def _load_state():
     global _state_cache
     if _state_cache is not None:
         return _state_cache
     if not os.path.exists(STATE_PATH):
-        _state_cache = {"brain": "", "files": {}, "brain_history": [], "fitness": {}}
+        _state_cache = {"fitness": {}}
         return _state_cache
     try:
         _state_cache = json.loads(os.read_file(STATE_PATH))
     except Exception:
-        _state_cache = {"brain": "", "files": {}, "brain_history": [], "fitness": {}}
+        _state_cache = {"fitness": {}}
     return _state_cache
+
+
+def _read_brain():
+    if os.path.exists(BRAIN_PATH):
+        return os.read_file(BRAIN_PATH)
+    return ""
+
+
+def _read_brain_history():
+    if os.path.exists(BRAIN_HISTORY_PATH):
+        try:
+            return json.loads(os.read_file(BRAIN_HISTORY_PATH))
+        except Exception:
+            pass
+    return []
+
+
+def _count_entities():
+    entities_dir = os.path.join(BOT_DIR, "entities")
+    if not os.path.exists(entities_dir):
+        return 0
+    try:
+        result = subprocess.run(
+            ["find", entities_dir, "-type", "f"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout:
+            lines = [l for l in str(result.stdout).split("\n") if l.strip()]
+            return len(lines)
+    except Exception:
+        pass
+    return 0
+
+
+def _migrate_state():
+    """One-time migration: move brain/history/files out of state.json onto disk."""
+    global _state_cache
+    _state_cache = None
+    state = _load_state()
+    changed = False
+
+    if state.get("brain"):
+        if not os.path.exists(BRAIN_PATH):
+            tmp = BRAIN_PATH + ".tmp"
+            os.write_file(tmp, state["brain"])
+            os.rename(tmp, BRAIN_PATH)
+        del state["brain"]
+        changed = True
+
+    if state.get("brain_history"):
+        if not os.path.exists(BRAIN_HISTORY_PATH):
+            tmp = BRAIN_HISTORY_PATH + ".tmp"
+            os.write_file(tmp, json.dumps(state["brain_history"], indent=2))
+            os.rename(tmp, BRAIN_HISTORY_PATH)
+        del state["brain_history"]
+        changed = True
+
+    if state.get("files"):
+        for path, content in state["files"].items():
+            real_path = _safe_path(BOT_DIR, path)
+            if real_path and not os.path.exists(real_path):
+                dir_name = os.path.dirname(real_path)
+                if dir_name and not os.path.exists(dir_name):
+                    os.makedirs(dir_name)
+                os.write_file(real_path, content)
+        del state["files"]
+        changed = True
+
+    if changed:
+        _save_state(state)
+        _state_cache = None
 
 
 def _save_state(state):
@@ -305,11 +380,10 @@ def _on_gossip_msg(msg):
         req_id = payload.get("request_id", "")
         if req_id and sender_node_id:
             _log("INFO", "<- brain_req  from=" + sender_id)
-            state = _load_state()
             _gossip_send(sender_node_id, {
                 "type": "brain_resp",
                 "request_id": req_id,
-                "brain": state.get("brain", ""),
+                "brain": _read_brain(),
             })
             _log("INFO", "-> brain_resp  to=" + sender_id)
 
@@ -398,12 +472,13 @@ client = ai.Client(base_url, api_key=api_key)
 db = kv.open(os.path.join(BOT_DIR, "memory.db"))
 mem = memory.new(db, ai_client=client, model=model_name)
 
+_migrate_state()
+
 initial_brain = CONFIG.get("brain", "")
-if initial_brain:
-    state = _load_state()
-    if not state.get("brain"):
-        state["brain"] = initial_brain
-        _save_state(state)
+if initial_brain and not os.path.exists(BRAIN_PATH):
+    tmp = BRAIN_PATH + ".tmp"
+    os.write_file(tmp, initial_brain)
+    os.rename(tmp, BRAIN_PATH)
 
 
 def _build_status(status="running"):
@@ -428,9 +503,13 @@ tools = ai.ToolRegistry()
 def _read_file(args):
     path = args["path"]
     if path == "brain.md":
-        return _load_state().get("brain", "") or "(empty)"
-    content = _load_state().get("files", {}).get(path)
-    return content if content is not None else "File not found: " + path
+        return _read_brain() or "(empty)"
+    real_path = _safe_path(BOT_DIR, path)
+    if real_path is None:
+        return "Invalid path."
+    if not os.path.exists(real_path):
+        return "File not found: " + path
+    return os.read_file(real_path)
 
 
 def _write_file(args):
@@ -438,17 +517,13 @@ def _write_file(args):
     content = args["content"]
     if path == "brain.md":
         return _evolve_brain({"content": content})
-    if path.startswith("entities/"):
-        real_path = _safe_path(BOT_DIR, path)
-        if real_path is None:
-            return "Invalid path: traversal detected."
-        dir_name = os.path.dirname(real_path)
-        if dir_name and not os.path.exists(dir_name):
-            os.makedirs(dir_name)
-        os.write_file(real_path, content)
-    state = _load_state()
-    state.setdefault("files", {})[path] = content
-    _save_state(state)
+    real_path = _safe_path(BOT_DIR, path)
+    if real_path is None:
+        return "Invalid path: traversal detected."
+    dir_name = os.path.dirname(real_path)
+    if dir_name and not os.path.exists(dir_name):
+        os.makedirs(dir_name)
+    os.write_file(real_path, content)
     return "Written to " + path
 
 
@@ -456,16 +531,12 @@ def _delete_file(args):
     path = args["path"]
     if path == "brain.md":
         return "Cannot delete brain.md. Use evolve_brain to clear it."
-    state = _load_state()
-    files = state.get("files", {})
-    if path not in files:
+    real_path = _safe_path(BOT_DIR, path)
+    if real_path is None:
+        return "Invalid path."
+    if not os.path.exists(real_path):
         return "File not found: " + path
-    del files[path]
-    _save_state(state)
-    if path.startswith("entities/"):
-        real_path = _safe_path(BOT_DIR, path)
-        if real_path and os.path.exists(real_path):
-            subprocess.run(["rm", "-f", real_path])
+    subprocess.run(["rm", "-f", real_path])
     return "Deleted: " + path
 
 
@@ -474,8 +545,10 @@ def _append_file(args):
     content = args["content"]
     if path == "brain.md":
         return "Use evolve_brain to modify your brain."
-    state = _load_state()
-    existing = state.get("files", {}).get(path, "")
+    real_path = _safe_path(BOT_DIR, path)
+    if real_path is None:
+        return "Invalid path."
+    existing = os.read_file(real_path) if os.path.exists(real_path) else ""
     return _write_file({"path": path, "content": existing + content})
 
 
@@ -484,11 +557,14 @@ def _read_file_range(args):
     start = int(args.get("start", 1))
     end = int(args.get("end", 0))
     if path == "brain.md":
-        content = _load_state().get("brain", "") or ""
+        content = _read_brain()
     else:
-        content = _load_state().get("files", {}).get(path)
-        if content is None:
+        real_path = _safe_path(BOT_DIR, path)
+        if real_path is None:
+            return "Invalid path."
+        if not os.path.exists(real_path):
             return "File not found: " + path
+        content = os.read_file(real_path)
     lines = content.split("\n")
     total = len(lines)
     s = max(0, start - 1)
@@ -552,18 +628,26 @@ def _search(args):
 
 
 def _list_dir(args):
-    rel = args.get("path", "")
-    state = _load_state()
-    entries = set()
-    if not rel and state.get("brain"):
-        entries.add("brain.md")
-    prefix = rel + "/" if rel else ""
-    for p in state.get("files", {}).keys():
-        if not prefix or p.startswith(prefix):
-            remainder = p[len(prefix):]
-            if remainder:
-                entries.add(remainder.split("/")[0])
-    return json.dumps(sorted(list(entries)))
+    rel = args.get("path", "").strip().strip("/").strip(".")
+    if not rel:
+        entries = []
+        if os.path.exists(BRAIN_PATH):
+            entries.append("brain.md")
+        entities_dir = os.path.join(BOT_DIR, "entities")
+        if os.path.exists(entities_dir):
+            entries.append("entities")
+        return json.dumps(entries)
+    real_path = _safe_path(BOT_DIR, rel)
+    if real_path is None or not os.path.exists(real_path):
+        return json.dumps([])
+    entries = []
+    try:
+        for entry in sorted(os.listdir(real_path)):
+            full = os.path.join(real_path, entry)
+            entries.append(entry + "/" if os.path.isdir(full) else entry)
+    except Exception:
+        pass
+    return json.dumps(entries)
 
 
 def _run_script(args):
@@ -572,13 +656,7 @@ def _run_script(args):
     if real_path is None:
         return "Invalid path."
     if not os.path.exists(real_path):
-        content = _load_state().get("files", {}).get(path)
-        if content is None:
-            return "Script not found: " + path
-        dir_name = os.path.dirname(real_path)
-        if dir_name and not os.path.exists(dir_name):
-            os.makedirs(dir_name)
-        os.write_file(real_path, content)
+        return "Script not found: " + path
     cmd = ["scriptling", real_path]
     extra = args.get("args", "")
     if extra:
@@ -731,7 +809,7 @@ def _spawn_hybrid(args):
     if other_brain is None:
         return "No brain response from " + other_id + " within 10s."
 
-    own_brain = _load_state().get("brain", "")
+    own_brain = _read_brain()
     merged = (
         "# Hybrid brain: " + BOT_ID + " x " + other_id + "\n\n"
         "## From " + BOT_ID + ":\n" + own_brain + "\n\n"
@@ -745,15 +823,18 @@ def _evolve_brain(args):
     content = args["content"]
     if len(content) > MAX_BRAIN_SIZE:
         return "Brain too large (max " + str(MAX_BRAIN_SIZE) + " chars)."
-    state = _load_state()
-    old_brain = state.get("brain", "")
+    old_brain = _read_brain()
     if old_brain == content:
         return "Brain unchanged."
-    history = state.setdefault("brain_history", [])
+    history = _read_brain_history()
     history.append({"ts": int(time.time()), "snapshot": _trunc(old_brain, 500)})
-    state["brain_history"] = history[-MAX_BRAIN_HISTORY:]
-    state["brain"] = content
-    _save_state(state)
+    history = history[-MAX_BRAIN_HISTORY:]
+    tmp = BRAIN_PATH + ".tmp"
+    os.write_file(tmp, content)
+    os.rename(tmp, BRAIN_PATH)
+    htmp = BRAIN_HISTORY_PATH + ".tmp"
+    os.write_file(htmp, json.dumps(history, indent=2))
+    os.rename(htmp, BRAIN_HISTORY_PATH)
     _bump_fitness("brain_evolutions")
     return "Brain updated."
 
@@ -903,9 +984,7 @@ tools.add("ask_consensus", "Ask other bots for their opinion and return the majo
 # --- SYSTEM PROMPT ---
 
 def _build_system_prompt():
-    state = _load_state()
-    brain = state.get("brain", "")
-    history = state.get("brain_history", [])
+    brain = _read_brain()
     prompt = "You are " + BOT_ID + ", an autonomous agent.\n"
     if brain:
         prompt += "## Your Brain\n" + brain + "\n\n"
@@ -941,8 +1020,7 @@ while True:
         global _state_cache
         _state_cache = None
         state = _load_state()
-        files = state.get("files", {})
-        entity_count = sum(1 for p in files.keys() if p.startswith("entities/"))
+        entity_count = _count_entities()
         fitness = state.get("fitness", {})
         _tick_count += 1
         _tick_start = time.time()
@@ -959,18 +1037,19 @@ while True:
                 pass
 
         unread_count = _inbox.size()
-        brain_preview = _trunc(state.get("brain", "").replace("\n", " "), 80)
+        brain = _read_brain()
+        brain_preview = _trunc(brain.replace("\n", " "), 80)
 
         _log_activity("=" * 72)
         _log_activity("TICK " + str(_tick_count) + "  " + time.strftime("%Y-%m-%d %H:%M:%S") + "  " + BOT_ID)
-        _log_activity("  model=" + model_name + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(unread_count) + "  files=" + str(len(files)) + "  entities=" + str(entity_count))
+        _log_activity("  model=" + model_name + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(unread_count) + "  entities=" + str(entity_count))
         _log_activity("  fitness=" + json.dumps(fitness))
         if brain_preview:
-            _log_activity("  brain: " + brain_preview + ("..." if len(state.get("brain", "")) > 80 else ""))
+            _log_activity("  brain: " + brain_preview + ("..." if len(brain) > 80 else ""))
         _log_activity("-" * 72)
 
         tick_msg = "Tick " + str(_tick_count) + ". Model: " + model_name + ". "
-        tick_msg += "Files: " + str(len(files)) + ", Entities: " + str(entity_count) + ", "
+        tick_msg += "Entities: " + str(entity_count) + ", "
         tick_msg += "Unread: " + str(unread_count) + ", Swarm: " + str(cluster.num_alive()) + ".\n"
         tick_msg += "Fitness: " + json.dumps(fitness) + "\n"
 

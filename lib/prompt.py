@@ -1,7 +1,6 @@
 def _build_system_prompt():
-    state = _load_state()
-    brain = state.get("brain", "")
-    history = state.get("brain_history", [])
+    brain = _read_brain()
+    history = _read_brain_history()
 
     prompt = (
         "You are " + BOT_ID + ", an autonomous agent. Your goal drives everything you do.\n\n"

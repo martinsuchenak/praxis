@@ -158,6 +158,21 @@ def cmd_spawn(name, goal, opts):
         print("Error: bot template is missing SYSTEM PROMPT markers.")
         sys.exit(1)
 
+    models_path = os.path.join(PROJECT_DIR, "models.json")
+    if os.path.exists(models_path):
+        try:
+            models_json = os.read_file(models_path)
+            json.loads(models_json)  # validate
+            models_block = "AVAILABLE_MODELS = " + models_json
+        except Exception:
+            models_block = "AVAILABLE_MODELS = []"
+    else:
+        models_block = "AVAILABLE_MODELS = []"
+    source = _inject_block(source, "# --- MODELS ---", "# --- END MODELS ---", models_block)
+    if source is None:
+        print("Error: bot template is missing MODELS markers.")
+        sys.exit(1)
+
     os.makedirs(bot_dir)
     os.write_file(os.path.join(bot_dir, "bot.py"), source)
 
@@ -304,10 +319,33 @@ def cmd_tail(bot_id, log_name="output.log"):
     if not os.path.exists(log_path):
         print("Log not found: " + log_path)
         sys.exit(1)
-    try:
-        subprocess.run(["tail", "-f", log_path])
-    except KeyboardInterrupt:
-        pass
+    r = subprocess.run(["tail", "-n", "20", log_path], capture_output=True)
+    if r.stdout:
+        print(str(r.stdout), end="")
+
+    r2 = subprocess.run(["wc", "-c", log_path], capture_output=True)
+    offset = 0
+    if r2.returncode == 0 and r2.stdout:
+        try:
+            offset = int(str(r2.stdout).strip().split()[0])
+        except Exception:
+            pass
+
+    print("[following " + log_path + " -- Ctrl+C to stop]")
+    while True:
+        try:
+            r3 = subprocess.run(
+                ["tail", "-c", "+" + str(offset + 1), log_path],
+                capture_output=True,
+            )
+            if r3.returncode == 0 and r3.stdout:
+                chunk = str(r3.stdout)
+                print(chunk, end="")
+                offset += len(chunk)
+            time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("")
+            break
 
 
 def cmd_logs(bot_id, lines=40):
