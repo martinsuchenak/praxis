@@ -5,8 +5,6 @@
 CONFIG = {
     "name": "TEMPLATE_NAME",
     "goal": "TEMPLATE_GOAL",
-    "api_key": "",
-    "base_url": "TEMPLATE_URL",
     "model": "TEMPLATE_MODEL",
     "brain": "TEMPLATE_BRAIN",
     "seed_addrs": [],
@@ -33,6 +31,7 @@ import subprocess
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_ID = CONFIG["name"]
 BOTS_DIR = os.path.dirname(BOT_DIR)
+LOCKS_DIR = os.path.join(os.path.dirname(BOTS_DIR), ".locks")
 
 STATE_PATH = os.path.join(BOT_DIR, "state.json")
 STATUS_PATH = os.path.join(BOT_DIR, "status.json")
@@ -55,6 +54,9 @@ TICK_INTERVAL = 30
 STALE_THRESHOLD_SEC = 120
 SCRIPT_TIMEOUT = 30
 MAX_BACKOFF_SEC = 600
+BOT_MAX_CONCURRENT = 1
+TICK_MAX_ITERATIONS = 5
+HTTP_ALLOWLIST = []
 # --- END DEFAULTS ---
 
 # --- MODELS ---
@@ -193,6 +195,79 @@ def _count_entities():
     return 0
 
 
+def _model_concurrency_limit():
+    for m in AVAILABLE_MODELS:
+        if m.get("id") == model_name:
+            lim = m.get("concurrency", 0)
+            if lim > 0:
+                return lim
+    return BOT_MAX_CONCURRENT
+
+
+def _lock_model():
+    """Join the FIFO queue for this model and block until a slot is available."""
+    limit = _model_concurrency_limit()
+    if limit <= 0:
+        return
+    sanitized = model_name.replace("/", "_").replace(":", "_").replace(".", "_")
+    queue_dir = os.path.join(LOCKS_DIR, sanitized)
+    stale_age = AGENT_REQUEST_TIMEOUT_MS // 1000 + 120
+
+    try:
+        if not os.path.exists(queue_dir):
+            os.makedirs(queue_dir)
+    except Exception:
+        return
+
+    # Ticket name: zero-padded ms timestamp + BOT_ID for stable sort and tiebreaking
+    ticket = str(int(time.time() * 1000)).zfill(16) + "_" + BOT_ID + ".wait"
+    ticket_file = os.path.join(queue_dir, ticket)
+    os.write_file(ticket_file, str(int(time.time())))
+
+    while True:
+        try:
+            now = int(time.time())
+            entries = []
+            for fname in os.listdir(queue_dir):
+                if not fname.endswith(".wait"):
+                    continue
+                fpath = os.path.join(queue_dir, fname)
+                try:
+                    ts = int(os.read_file(fpath).strip())
+                    if now - ts > stale_age:
+                        subprocess.run(["rm", "-f", fpath])
+                        continue
+                except Exception:
+                    subprocess.run(["rm", "-f", fpath])
+                    continue
+                entries.append(fname)
+            entries.sort()
+            try:
+                pos = entries.index(ticket)
+            except ValueError:
+                # Ticket was removed (e.g. stale cleanup race) — re-register
+                os.write_file(ticket_file, str(int(time.time())))
+                continue
+            if pos < limit:
+                return
+            _log("INFO", "LLM queue pos=" + str(pos + 1) + "/" + str(len(entries)) + " model=" + model_name + " limit=" + str(limit))
+        except Exception:
+            return
+        time.sleep(2 + random.random())
+
+
+def _unlock_model():
+    """Remove this bot's ticket from the queue."""
+    sanitized = model_name.replace("/", "_").replace(":", "_").replace(".", "_")
+    queue_dir = os.path.join(LOCKS_DIR, sanitized)
+    try:
+        for fname in os.listdir(queue_dir):
+            if fname.endswith("_" + BOT_ID + ".wait"):
+                subprocess.run(["rm", "-f", os.path.join(queue_dir, fname)])
+    except Exception:
+        pass
+
+
 def _migrate_state():
     """One-time migration: move brain/history/files out of state.json onto disk."""
     global _state_cache
@@ -306,8 +381,8 @@ def _detect_local_ip():
 
 
 # --- Network startup ---
-api_key = CONFIG["api_key"] or os.environ.get("BOT_API_KEY", "")
-base_url = CONFIG["base_url"] or os.environ.get("BOT_BASE_URL", "")
+api_key = os.environ.get("BOT_API_KEY", "")
+base_url = os.environ.get("BOT_BASE_URL", "")
 model_name = CONFIG["model"] or os.environ.get("BOT_MODEL", "")
 goal = CONFIG["goal"]
 seed_addrs = CONFIG.get("seed_addrs", [])
@@ -573,8 +648,15 @@ def _read_file_range(args):
     return "Lines " + str(s + 1) + "-" + str(min(e, total)) + " of " + str(total) + ":\n" + "\n".join(chunk)
 
 
+_SHELL_BLOCKED = ("curl", "wget")
+
+
 def _shell(args):
     command = args["command"]
+    stripped = command.strip().lstrip("/ \t")
+    first_word = stripped.split()[0].split("/")[-1] if stripped.split() else ""
+    if first_word in _SHELL_BLOCKED:
+        return "Error: " + first_word + " is not allowed in shell. Use the http_request tool instead."
     timeout = int(args.get("timeout", "30"))
     cwd = BOT_DIR
     if args.get("cwd"):
@@ -756,8 +838,6 @@ def _spawn_bot(args):
     child_config = {
         "name": new_name,
         "goal": new_goal,
-        "api_key": "",
-        "base_url": CONFIG["base_url"],
         "model": new_model,
         "brain": new_brain,
         "seed_addrs": [_gossip_addr],
@@ -845,14 +925,11 @@ def _query_model(args):
     system = args.get("system", "")
     use_thinking = args.get("thinking", True)
     try:
-        one_shot = ai.Client(base_url, api_key=api_key)
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
         final_prompt = prompt if use_thinking else "/no_think\n" + prompt
-        messages.append({"role": "user", "content": final_prompt})
-        response = one_shot.complete(model=target_model, messages=messages, max_tokens=4096)
-        return response
+        kwargs = {"max_tokens": 4096}
+        if system:
+            kwargs["system_prompt"] = system
+        return client.ask(target_model, final_prompt, **kwargs)
     except Exception as e:
         return "Error querying " + target_model + ": " + str(e)
 
@@ -880,8 +957,24 @@ def _parse_curl_output(result):
     return output
 
 
+def _http_allowed(url):
+    if not HTTP_ALLOWLIST:
+        return True
+    try:
+        host = url.split("//", 1)[1].split("/")[0].split(":")[0].lower()
+        for allowed in HTTP_ALLOWLIST:
+            a = allowed.lower()
+            if host == a or host.endswith("." + a):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _http_request(args):
     url = args["url"]
+    if not _http_allowed(url):
+        return "Error: " + url.split("//", 1)[-1].split("/")[0] + " is not in the HTTP allowlist."
     method = args.get("method", "GET").upper()
     body = args.get("body", "")
     content_type = args.get("content_type", "")
@@ -1063,36 +1156,32 @@ while True:
         tick_msg += "What is your next action toward your goal?"
 
         # Drain pending consensus requests (deferred from gossip handler to avoid blocking)
-        while _consensus_req_queue.size() > 0:
-            req = _consensus_req_queue.get()
-            try:
-                resp = client.complete(
-                    model=model_name,
-                    messages=[
-                        {"role": "system", "content": "Answer briefly and concisely in one sentence."},
-                        {"role": "user", "content": "/no_think\n" + req["question"]},
-                    ],
-                    max_tokens=256,
-                )
-                answer = resp if isinstance(resp, str) else str(resp)
-            except Exception as e:
-                answer = "Error: " + str(e)
-            _gossip_send(req["sender_node_id"], {
-                "type": "consensus_resp",
-                "request_id": req["req_id"],
-                "answer": answer,
-                "from": BOT_ID,
-            })
-            _log("INFO", "-> consensus_resp  to=" + req["sender_id"] + "  answer=" + _trunc(answer, 80))
-            try:
-                mem.remember("Consensus from " + req["sender_id"] + ": " + req["question"] + " -> " + answer)
-            except Exception:
-                pass
-            _bump_fitness("consensus_answered")
+        _lock_model()
+        try:
+            while _consensus_req_queue.size() > 0:
+                req = _consensus_req_queue.get()
+                try:
+                    answer = client.ask(model_name, "/no_think\n" + req["question"], system_prompt="Answer briefly and concisely in one sentence.", max_tokens=256)
+                except Exception as e:
+                    answer = "Error: " + str(e)
+                _gossip_send(req["sender_node_id"], {
+                    "type": "consensus_resp",
+                    "request_id": req["req_id"],
+                    "answer": answer,
+                    "from": BOT_ID,
+                })
+                _log("INFO", "-> consensus_resp  to=" + req["sender_id"] + "  answer=" + _trunc(answer, 80))
+                try:
+                    mem.remember("Consensus from " + req["sender_id"] + ": " + req["question"] + " -> " + answer)
+                except Exception:
+                    pass
+                _bump_fitness("consensus_answered")
 
-        bot_agent.system_prompt = _build_system_prompt()
-        trigger_msg = tick_msg if thinking_enabled else "/no_think\n" + tick_msg
-        bot_agent.trigger(trigger_msg, max_iterations=5)
+            bot_agent.system_prompt = _build_system_prompt()
+            trigger_msg = tick_msg if thinking_enabled else "/no_think\n" + tick_msg
+            bot_agent.trigger(trigger_msg, max_iterations=TICK_MAX_ITERATIONS)
+        finally:
+            _unlock_model()
 
         _bump_fitness("ticks_alive")
         _atomic_write_json(STATUS_PATH, _build_status())

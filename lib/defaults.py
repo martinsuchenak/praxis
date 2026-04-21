@@ -21,3 +21,6 @@ GOSSIP_SECRET = os.environ.get("BOT_GOSSIP_SECRET", "")
 STALE_THRESHOLD_SEC = int(os.environ.get("BOT_STALE_THRESHOLD", "120"))
 SCRIPT_TIMEOUT = int(os.environ.get("BOT_SCRIPT_TIMEOUT", "30"))
 MAX_BACKOFF_SEC = int(os.environ.get("BOT_MAX_BACKOFF", "600"))
+BOT_MAX_CONCURRENT = int(os.environ.get("BOT_MAX_CONCURRENT", "1"))
+TICK_MAX_ITERATIONS = int(os.environ.get("BOT_TICK_MAX_ITERATIONS", "5"))
+HTTP_ALLOWLIST = [h.strip() for h in os.environ.get("BOT_HTTP_ALLOWLIST", "").split(",") if h.strip()]

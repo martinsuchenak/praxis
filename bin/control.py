@@ -124,7 +124,6 @@ def cmd_spawn(name, goal, opts):
         print("Bot already exists: " + name)
         sys.exit(1)
 
-    base_url = opts.get("base_url", os.environ.get("BOT_BASE_URL", ""))
     model = opts.get("model", os.environ.get("BOT_MODEL", ""))
     brain = opts.get("brain", "") or "I am " + name + ". I was just created. I need to explore and understand my purpose.\n"
     seeds = [s.strip() for s in opts["seeds"].split(",") if s.strip()] if opts.get("seeds") else []
@@ -133,8 +132,6 @@ def cmd_spawn(name, goal, opts):
     config = {
         "name": name,
         "goal": goal,
-        "api_key": "",
-        "base_url": base_url,
         "model": model,
         "brain": brain,
         "seed_addrs": seeds,

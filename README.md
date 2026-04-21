@@ -62,6 +62,9 @@ BOT_LOG_VERBOSE=true          # optional: disable log truncation for debugging
 BOT_GOSSIP_SECRET=shared-key  # optional: authenticate inter-bot gossip messages
 BOT_STALE_THRESHOLD=120       # optional: seconds before a "running" bot is flagged STALE (default: 120)
 BOT_MAX_BACKOFF=600           # optional: max backoff seconds after repeated tick errors (default: 600)
+BOT_MAX_CONCURRENT=1          # optional: max concurrent LLM calls per model (default: 1, override per-model in models.json)
+BOT_TICK_MAX_ITERATIONS=5     # optional: max tool-call iterations per tick (default: 5)
+BOT_HTTP_ALLOWLIST=           # optional: comma-separated domains bots may call via http_request (default: unrestricted)
 ```
 
 API keys are never baked into bot source files — bots read them from the environment at runtime.
@@ -89,7 +92,7 @@ Create a `models.json` file (see `models.example.json` for the format) to give b
 ]
 ```
 
-Each entry has: `id` (model name matching your API), `label` (human-readable), `description` (what it's good for), `cost` (low/medium/high), and `strengths` (tag list).
+Each entry has: `id` (model name matching your API), `label` (human-readable), `description` (what it's good for), `cost` (low/medium/high), `strengths` (tag list), and optionally `concurrency` (max simultaneous LLM calls for this model — overrides `BOT_MAX_CONCURRENT`).
 
 When present, bots get an **Available Models** section in their system prompt and a `list_models` tool. They can then use `query_model` for one-shot calls to a specific model or pass `model=` when spawning children. The model catalog is baked into each bot's source so child and migrated bots carry it forward.
 
@@ -107,10 +110,11 @@ With options:
 scriptling bin/control.py spawn Scout "Scout the environment" \
   seeds=192.168.1.10:37291 model=qwen/qwen3-235b-a22b
 
+
 scriptling bin/control.py spawn Worker "Process data quickly" thinking=false
 ```
 
-Available options: `base_url=`, `model=`, `brain=`, `seeds=`, `thinking=false`
+Available options: `model=`, `brain=`, `seeds=`, `thinking=false`
 
 Then start it:
 
@@ -335,7 +339,7 @@ Plus 3 memory tools auto-registered by the Agent: `memory_remember`, `memory_rec
 - **Spawn limiting** — each bot can create at most 10 children.
 - **Consensus deferred** — incoming `consensus_req` gossip messages are queued and processed at tick time, not inside the gossip callback, to avoid blocking the gossip goroutine.
 - **Thinking mode** — controlled per-bot via the `thinking` CONFIG field; implemented by prepending `/no_think` to the LLM message rather than a parameter, since that's what the model router requires.
-- **No secrets in source** — API keys are never written into bot.py. Bots read `BOT_API_KEY` from the environment at runtime.
+- **No credentials in source** — API keys and the base URL are never written into bot.py. Bots read `BOT_API_KEY` and `BOT_BASE_URL` from the environment at runtime. This prevents bots from reading their own source and using the endpoint directly via `shell` or `http_request`.
 - **Gossip auth** — optional shared secret via `BOT_GOSSIP_SECRET`. When set, all inter-bot messages include `_secret` in the payload and unauthenticated messages are dropped. Bots on different machines just need the same secret in their `.env`.
 - **Stale detection** — `control list` flags bots as STALE if `last_tick_ts` (updated every tick) is older than `BOT_STALE_THRESHOLD` seconds (default 120).
 - **Crash recovery** — `control watchdog` periodically checks if running bots have a live process and auto-restarts any that crashed.
@@ -344,3 +348,5 @@ Plus 3 memory tools auto-registered by the Agent: `memory_remember`, `memory_rec
 - **`shell` tool** — bots can run arbitrary shell commands (`git`, `python3`, `npm`, `docker`, etc.) with stdout/stderr capture and a configurable timeout. `cwd` defaults to the bot's own directory.
 - **`search` tool** — regex search across `entities/` using ripgrep if available, falling back to `grep -rn`. Returns `file:line:match` format so the bot can `read_file_range` only the relevant section.
 - **`http_request`** — single HTTP tool covering GET, POST, PUT, DELETE, PATCH with optional body, `Content-Type`, and extra headers. Returns `http_status` (real HTTP code, not curl exit code).
+- **Per-model concurrency cap** — before each tick's LLM call, bots acquire a slot under `.locks/<model>/`. Each bot writes a timestamped file; slots held longer than the request timeout are automatically treated as stale (handles crashes). `concurrency` in `models.json` sets the limit per model; `BOT_MAX_CONCURRENT` is the fallback. This prevents slow models from being hammered by concurrent requests that all time out.
+- **Tick iteration cap** — `BOT_TICK_MAX_ITERATIONS` limits the number of tool-call rounds per tick (default 5). Useful for slow models where shorter sessions reduce queuing pressure.

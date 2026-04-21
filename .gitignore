@@ -2,3 +2,4 @@ bots/*
 shared/*
 .env
 models.json
+.locks/*
