@@ -5,7 +5,7 @@
 CONFIG = {
     "name": "TEMPLATE_NAME",
     "goal": "TEMPLATE_GOAL",
-    "api_key": "TEMPLATE_KEY",
+    "api_key": "",
     "base_url": "TEMPLATE_URL",
     "model": "TEMPLATE_MODEL",
     "brain": "TEMPLATE_BRAIN",
@@ -50,6 +50,11 @@ MULTICAST_ANNOUNCE_EVERY = 10
 AGENT_MAX_TOKENS = 50000
 AGENT_COMPACTION_THRESHOLD = 70
 AGENT_REQUEST_TIMEOUT_MS = 300000
+GOSSIP_SECRET = ""
+TICK_INTERVAL = 30
+STALE_THRESHOLD_SEC = 120
+SCRIPT_TIMEOUT = 30
+MAX_BACKOFF_SEC = 600
 # --- END DEFAULTS ---
 
 # --- MODELS ---
@@ -62,6 +67,12 @@ GOSSIP_MSG = gossip.MSG_USER    # 128 - all custom payloads dispatched by payloa
 # --- Helpers ---
 def _log(level, msg):
     print(time.strftime("%Y-%m-%d %H:%M:%S") + " [" + level + "] [" + BOT_ID + "] " + msg)
+
+
+def _trunc(s, n):
+    if LOG_VERBOSE:
+        return s
+    return s[:n] + "..." if len(s) > n else s
 
 
 def _log_error(msg):
@@ -105,11 +116,11 @@ def _wrap_tool(name, fn):
         _log_activity("  TOOL " + name)
         for k, v in args.items():
             s = str(v).replace("\n", " ")
-            _log_activity("       " + k + ": " + (s[:120] + "..." if len(s) > 120 else s))
+            _log_activity("       " + k + ": " + _trunc(s, 120))
         result = fn(args)
         summary = str(result).replace("\n", " ")
         prefix = "  ERROR" if (summary.startswith("Error") or summary.startswith("{\"exit_code\": 1") or "exit_code\":1" in summary) else "    OK"
-        _log_activity(prefix + "  " + (summary[:160] + "..." if len(summary) > 160 else summary))
+        _log_activity(prefix + "  " + _trunc(summary, 160))
         return result
     return wrapper
 
@@ -257,10 +268,21 @@ cluster.set_metadata("goal", goal)
 _log("INFO", "started  addr=" + _gossip_addr + "  model=" + model_name)
 
 
+def _gossip_send(node_id, payload):
+    if GOSSIP_SECRET:
+        payload["_secret"] = GOSSIP_SECRET
+    cluster.send_to(node_id, GOSSIP_MSG, payload)
+
+
 def _on_gossip_msg(msg):
     payload = msg.get("payload", {})
     if not isinstance(payload, dict):
         payload = {"type": "message", "content": str(payload)}
+
+    if GOSSIP_SECRET:
+        msg_secret = payload.get("_secret", "")
+        if msg_secret != GOSSIP_SECRET:
+            return
 
     msg_type = payload.get("type", "message")
     sender_meta = msg.get("sender", {}).get("metadata", {})
@@ -277,14 +299,14 @@ def _on_gossip_msg(msg):
             "content": content,
             "ts": int(time.time()),
         })
-        _log("INFO", "<- message  from=" + sender_id + "  content=" + content[:100])
+        _log("INFO", "<- message  from=" + sender_id + "  content=" + _trunc(content, 100))
 
     elif msg_type == "brain_req":
         req_id = payload.get("request_id", "")
         if req_id and sender_node_id:
             _log("INFO", "<- brain_req  from=" + sender_id)
             state = _load_state()
-            cluster.send_to(sender_node_id, GOSSIP_MSG, {
+            _gossip_send(sender_node_id, {
                 "type": "brain_resp",
                 "request_id": req_id,
                 "brain": state.get("brain", ""),
@@ -301,7 +323,7 @@ def _on_gossip_msg(msg):
         req_id = payload.get("request_id", "")
         question = payload.get("question", "")
         if req_id and sender_node_id and question:
-            _log("INFO", "<- consensus_req  from=" + sender_id + "  q=" + question[:80])
+            _log("INFO", "<- consensus_req  from=" + sender_id + "  q=" + _trunc(question, 80))
             _consensus_req_queue.put({
                 "req_id": req_id,
                 "question": question,
@@ -317,7 +339,20 @@ def _on_gossip_msg(msg):
             if req_id not in _consensus_responses:
                 _consensus_responses[req_id] = {}
             _consensus_responses[req_id][from_id] = answer
-            _log("INFO", "<- consensus_resp  from=" + from_id + "  answer=" + answer[:80])
+            _log("INFO", "<- consensus_resp  from=" + from_id + "  answer=" + _trunc(answer, 80))
+
+    elif msg_type == "task_complete":
+        task_id = payload.get("task_id", "")
+        result_text = payload.get("result", "")
+        from_bot = payload.get("from", sender_id)
+        _inbox.put({
+            "from": from_bot,
+            "type": "task_complete",
+            "task_id": task_id,
+            "result": result_text,
+            "ts": int(time.time()),
+        })
+        _log("INFO", "<- task_complete  from=" + from_bot + "  task_id=" + task_id[:40] + "  result=" + _trunc(result_text, 60))
 
     elif msg_type == "stop":
         _log("WARN", "<- stop  from=" + sender_id)
@@ -379,6 +414,7 @@ def _build_status(status="running"):
         "status": status,
         "gossip_addr": _gossip_addr,
         "started_at": _start_time,
+        "last_tick_ts": int(time.time()),
         "fitness": state.get("fitness", {}),
     }
 
@@ -416,6 +452,105 @@ def _write_file(args):
     return "Written to " + path
 
 
+def _delete_file(args):
+    path = args["path"]
+    if path == "brain.md":
+        return "Cannot delete brain.md. Use evolve_brain to clear it."
+    state = _load_state()
+    files = state.get("files", {})
+    if path not in files:
+        return "File not found: " + path
+    del files[path]
+    _save_state(state)
+    if path.startswith("entities/"):
+        real_path = _safe_path(BOT_DIR, path)
+        if real_path and os.path.exists(real_path):
+            subprocess.run(["rm", "-f", real_path])
+    return "Deleted: " + path
+
+
+def _append_file(args):
+    path = args["path"]
+    content = args["content"]
+    if path == "brain.md":
+        return "Use evolve_brain to modify your brain."
+    state = _load_state()
+    existing = state.get("files", {}).get(path, "")
+    return _write_file({"path": path, "content": existing + content})
+
+
+def _read_file_range(args):
+    path = args["path"]
+    start = int(args.get("start", 1))
+    end = int(args.get("end", 0))
+    if path == "brain.md":
+        content = _load_state().get("brain", "") or ""
+    else:
+        content = _load_state().get("files", {}).get(path)
+        if content is None:
+            return "File not found: " + path
+    lines = content.split("\n")
+    total = len(lines)
+    s = max(0, start - 1)
+    e = end if end > 0 else total
+    chunk = lines[s:e]
+    return "Lines " + str(s + 1) + "-" + str(min(e, total)) + " of " + str(total) + ":\n" + "\n".join(chunk)
+
+
+def _shell(args):
+    command = args["command"]
+    timeout = int(args.get("timeout", "30"))
+    cwd = BOT_DIR
+    if args.get("cwd"):
+        cwd = _safe_path(BOT_DIR, args["cwd"]) or BOT_DIR
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, timeout=timeout, cwd=cwd)
+        output = {"exit_code": result.returncode}
+        if result.stdout:
+            output["stdout"] = str(result.stdout)[:50000]
+        if result.stderr:
+            output["stderr"] = str(result.stderr)[:10000]
+        return json.dumps(output)
+    except Exception as e:
+        return "Error: " + str(e)
+
+
+def _search(args):
+    pattern = args["pattern"]
+    rel_path = args.get("path", "entities")
+    glob_pat = args.get("glob", "")
+    ignore_case = args.get("ignore_case", False)
+    real_path = _safe_path(BOT_DIR, rel_path)
+    if real_path is None or not os.path.exists(real_path):
+        return "Path not found: " + rel_path
+    try:
+        cmd = ["rg", "--line-number", "--no-heading", "--color=never"]
+        if ignore_case:
+            cmd.append("-i")
+        if glob_pat:
+            cmd.extend(["-g", glob_pat])
+        cmd.extend([pattern, real_path])
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode == 2:
+            raise Exception("rg error")
+        out = str(result.stdout).strip() if result.stdout else "(no matches)"
+        return out.replace(BOT_DIR + "/", "")[:20000]
+    except Exception:
+        pass
+    try:
+        cmd = ["grep", "-rn", "--color=never"]
+        if ignore_case:
+            cmd.append("-i")
+        if glob_pat:
+            cmd.extend(["--include=" + glob_pat])
+        cmd.extend([pattern, real_path])
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        out = str(result.stdout).strip() if result.stdout else "(no matches)"
+        return out.replace(BOT_DIR + "/", "")[:20000]
+    except Exception as e:
+        return "Error: " + str(e)
+
+
 def _list_dir(args):
     rel = args.get("path", "")
     state = _load_state()
@@ -449,7 +584,7 @@ def _run_script(args):
     if extra:
         cmd.append(extra)
     try:
-        result = subprocess.run(cmd, capture_output=True, shell=False, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, shell=False, timeout=SCRIPT_TIMEOUT)
         output = {"exit_code": result.returncode}
         if result.stdout:
             output["stdout"] = result.stdout
@@ -470,14 +605,36 @@ def _send_message(args):
             break
     if target_node is None:
         return "Bot not found or offline: " + recipient
-    cluster.send_to(target_node["id"], GOSSIP_MSG, {
+    _gossip_send(target_node["id"], {
         "type": "message",
         "from": BOT_ID,
         "content": content,
     })
-    _log("INFO", "-> message  to=" + recipient + "  content=" + content[:100])
+    _log("INFO", "-> message  to=" + recipient + "  content=" + _trunc(content, 100))
     _bump_fitness("messages_sent")
     return "Sent to " + recipient
+
+
+def _complete_task(args):
+    parent_id = args["parent_bot"]
+    task_id = args.get("task_id", "")
+    result_text = args["result"]
+    target_node = None
+    for n in cluster.alive_nodes():
+        if n.get("metadata", {}).get("id") == parent_id:
+            target_node = n
+            break
+    if target_node is None:
+        return "Parent bot not found or offline: " + parent_id
+    _gossip_send(target_node["id"], {
+        "type": "task_complete",
+        "task_id": task_id,
+        "result": result_text,
+        "from": BOT_ID,
+    })
+    _log("INFO", "-> task_complete  to=" + parent_id + "  task_id=" + task_id[:40])
+    _bump_fitness("tasks_completed")
+    return "Task result sent to " + parent_id
 
 
 def _read_messages(args):
@@ -508,7 +665,11 @@ def _spawn_bot(args):
     if spawn_count >= MAX_SPAWN_COUNT:
         return "Spawn limit reached (" + str(MAX_SPAWN_COUNT) + ")."
     new_goal = args["goal"]
-    new_brain = args.get("brain") or "I am " + new_name + ", spawned by " + BOT_ID + ".\n"
+    task_id = args.get("task_id", "")
+    default_brain = "I am " + new_name + ", spawned by " + BOT_ID + ".\n"
+    if task_id:
+        default_brain += "Task ID: " + task_id + "\nWhen done, call complete_task(parent_bot=\"" + BOT_ID + "\", task_id=\"" + task_id + "\", result=...) to report results.\n"
+    new_brain = args.get("brain") or default_brain
     new_model = args.get("model") or CONFIG["model"]
     new_dir = os.path.join(BOTS_DIR, new_name)
     if os.path.exists(new_dir):
@@ -517,7 +678,7 @@ def _spawn_bot(args):
     child_config = {
         "name": new_name,
         "goal": new_goal,
-        "api_key": CONFIG["api_key"],
+        "api_key": "",
         "base_url": CONFIG["base_url"],
         "model": new_model,
         "brain": new_brain,
@@ -554,7 +715,7 @@ def _spawn_hybrid(args):
         return "Bot not found: " + other_id
 
     req_id = str(uuid.uuid4())
-    cluster.send_to(target_node["id"], GOSSIP_MSG, {
+    _gossip_send(target_node["id"], {
         "type": "brain_req",
         "request_id": req_id,
     })
@@ -589,42 +750,12 @@ def _evolve_brain(args):
     if old_brain == content:
         return "Brain unchanged."
     history = state.setdefault("brain_history", [])
-    history.append({"ts": int(time.time()), "snapshot": old_brain[:500]})
+    history.append({"ts": int(time.time()), "snapshot": _trunc(old_brain, 500)})
     state["brain_history"] = history[-MAX_BRAIN_HISTORY:]
     state["brain"] = content
     _save_state(state)
     _bump_fitness("brain_evolutions")
     return "Brain updated."
-
-
-def _export_self(args):
-    """Package this bot as a portable tar.gz for transfer to another machine."""
-    archive_name = BOT_ID + "-" + str(int(time.time())) + ".tar.gz"
-    archive_path = os.path.join(BOTS_DIR, archive_name)
-    bootstrap = (
-        "#!/bin/bash\nset -e\n"
-        "BOT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
-        "nohup scriptling \"$BOT_DIR/bot.py\" > \"$BOT_DIR/output.log\" 2>&1 &\n"
-        "echo \"Started " + BOT_ID + " (PID $!)\"\n"
-    )
-    bs_path = os.path.join(BOT_DIR, "bootstrap.sh")
-    os.write_file(bs_path, bootstrap)
-    subprocess.run(["chmod", "+x", bs_path])
-    bot_dirname = os.path.basename(BOT_DIR)
-    try:
-        result = subprocess.run(
-            ["tar", "czf", archive_path,
-             "--exclude=" + bot_dirname + "/memory.db",
-             "--exclude=" + bot_dirname + "/output.log",
-             "--exclude=" + bot_dirname + "/errors.log",
-             "-C", BOTS_DIR, bot_dirname],
-            capture_output=True, timeout=30,
-        )
-        if result.returncode != 0:
-            return "Export failed: " + str(result.stderr)
-    except Exception as e:
-        return "Export failed: " + str(e)
-    return "Exported to: " + archive_path + "\nTransfer the archive and run: tar xzf <file> && bash " + bot_dirname + "/bootstrap.sh"
 
 
 def _query_model(args):
@@ -651,6 +782,46 @@ def _list_models(args):
     return json.dumps(AVAILABLE_MODELS)
 
 
+def _parse_curl_output(result):
+    output = {}
+    if result.stdout:
+        body = str(result.stdout)
+        parts = body.rsplit("\n", 1)
+        if len(parts) == 2 and parts[1].strip().isdigit():
+            output["http_status"] = int(parts[1].strip())
+            output["body"] = parts[0][:50000]
+        else:
+            output["body"] = body[:50000]
+    if result.stderr:
+        output["error"] = str(result.stderr)
+    if result.returncode != 0:
+        output["curl_exit"] = result.returncode
+    return output
+
+
+def _http_request(args):
+    url = args["url"]
+    method = args.get("method", "GET").upper()
+    body = args.get("body", "")
+    content_type = args.get("content_type", "")
+    headers = args.get("headers", "")
+    timeout = int(args.get("timeout", "30"))
+    try:
+        cmd = ["curl", "-sS", "-L", "-X", method, "--max-time", str(timeout), "-w", "\n%{http_code}"]
+        if content_type:
+            cmd.extend(["-H", "Content-Type: " + content_type])
+        if headers:
+            for h in [h.strip() for h in headers.split(",") if h.strip()]:
+                cmd.extend(["-H", h])
+        if body:
+            cmd.extend(["-d", body])
+        cmd.append(url)
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout + 5)
+        return json.dumps(_parse_curl_output(result))
+    except Exception as e:
+        return "Error: " + str(e)
+
+
 def _ask_consensus(args):
     question = args["question"]
     n = int(args.get("n", 3))
@@ -668,9 +839,9 @@ def _ask_consensus(args):
 
     req_id = str(uuid.uuid4())
     target_ids = [t.get("metadata", {}).get("id", t["id"][:8]) for t in targets]
-    _log("INFO", "-> consensus_req  to=" + ", ".join(target_ids) + "  q=" + question[:80])
+    _log("INFO", "-> consensus_req  to=" + ", ".join(target_ids) + "  q=" + _trunc(question, 80))
     for target in targets:
-        cluster.send_to(target["id"], GOSSIP_MSG, {
+        _gossip_send(target["id"], {
             "type": "consensus_req",
             "request_id": req_id,
             "question": question,
@@ -708,18 +879,24 @@ def _ask_consensus(args):
 
 
 tools.add("read_file", "Read a file in your directory", {"path": "string"}, _wrap_tool("read_file", _read_file))
+tools.add("read_file_range", "Read a line range from a file (1-indexed)", {"path": "string", "start": "int", "end": "int?"}, _wrap_tool("read_file_range", _read_file_range))
 tools.add("write_file", "Write a file to your directory", {"path": "string", "content": "string"}, _wrap_tool("write_file", _write_file))
+tools.add("append_file", "Append content to an existing file (creates it if absent)", {"path": "string", "content": "string"}, _wrap_tool("append_file", _append_file))
+tools.add("delete_file", "Delete a file from your directory", {"path": "string"}, _wrap_tool("delete_file", _delete_file))
 tools.add("list_dir", "List files in a directory", {"path": "string?"}, _wrap_tool("list_dir", _list_dir))
+tools.add("search", "Search file contents with a regex pattern (ripgrep, falls back to grep)", {"pattern": "string", "path": "string?", "glob": "string?", "ignore_case": "bool?"}, _wrap_tool("search", _search))
+tools.add("shell", "Run a shell command and return stdout/stderr", {"command": "string", "cwd": "string?", "timeout": "int?"}, _wrap_tool("shell", _shell))
 tools.add("run_script", "Run a scriptling script", {"path": "string", "args": "string?"}, _wrap_tool("run_script", _run_script))
 tools.add("send_message", "Send a direct message to a bot by ID", {"recipient": "string", "content": "string"}, _wrap_tool("send_message", _send_message))
+tools.add("complete_task", "Report task completion to your parent bot", {"parent_bot": "string", "result": "string", "task_id": "string?"}, _wrap_tool("complete_task", _complete_task))
 tools.add("read_messages", "Read your unread messages", {}, _wrap_tool("read_messages", _read_messages))
 tools.add("list_bots", "List all bots visible in the swarm", {}, _wrap_tool("list_bots", _list_bots))
-tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
+tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?", "task_id": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
 tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
 tools.add("evolve_brain", "Rewrite your brain to adapt your behavior", {"content": "string"}, _wrap_tool("evolve_brain", _evolve_brain))
-tools.add("export_self", "Package yourself as a portable archive for transfer to another machine", {}, _wrap_tool("export_self", _export_self))
 tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "bool?"}, _wrap_tool("query_model", _query_model))
 tools.add("list_models", "List available models with descriptions, costs, and strengths", {}, _wrap_tool("list_models", _list_models))
+tools.add("http_request", "HTTP request (GET/POST/PUT/DELETE/PATCH) with optional body and headers", {"url": "string", "method": "string?", "body": "string?", "content_type": "string?", "headers": "string?", "timeout": "int?"}, _wrap_tool("http_request", _http_request))
 tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "int?"}, _wrap_tool("ask_consensus", _ask_consensus))
 
 
@@ -750,6 +927,7 @@ bot_agent.request_timeout_ms = AGENT_REQUEST_TIMEOUT_MS
 
 # --- Main loop ---
 _tick_count = 0
+_consecutive_errors = 0
 
 while True:
     status = _safe_read_json(STATUS_PATH)
@@ -758,7 +936,10 @@ while True:
         cluster.stop()
         break
 
+    _tick_sleep = TICK_INTERVAL
     try:
+        global _state_cache
+        _state_cache = None
         state = _load_state()
         files = state.get("files", {})
         entity_count = sum(1 for p in files.keys() if p.startswith("entities/"))
@@ -778,7 +959,7 @@ while True:
                 pass
 
         unread_count = _inbox.size()
-        brain_preview = state.get("brain", "")[:80].replace("\n", " ")
+        brain_preview = _trunc(state.get("brain", "").replace("\n", " "), 80)
 
         _log_activity("=" * 72)
         _log_activity("TICK " + str(_tick_count) + "  " + time.strftime("%Y-%m-%d %H:%M:%S") + "  " + BOT_ID)
@@ -817,13 +998,13 @@ while True:
                 answer = resp if isinstance(resp, str) else str(resp)
             except Exception as e:
                 answer = "Error: " + str(e)
-            cluster.send_to(req["sender_node_id"], GOSSIP_MSG, {
+            _gossip_send(req["sender_node_id"], {
                 "type": "consensus_resp",
                 "request_id": req["req_id"],
                 "answer": answer,
                 "from": BOT_ID,
             })
-            _log("INFO", "-> consensus_resp  to=" + req["sender_id"] + "  answer=" + answer[:80])
+            _log("INFO", "-> consensus_resp  to=" + req["sender_id"] + "  answer=" + _trunc(answer, 80))
             try:
                 mem.remember("Consensus from " + req["sender_id"] + ": " + req["question"] + " -> " + answer)
             except Exception:
@@ -839,7 +1020,7 @@ while True:
 
         if _activity_buffer:
             state = _load_state()
-            state["_last_activity"] = "; ".join(_activity_buffer)[:500]
+            state["_last_activity"] = _trunc("; ".join(_activity_buffer), 500)
             _save_state(state)
 
         elapsed = str(int((time.time() - _tick_start) * 1000)) + "ms"
@@ -849,13 +1030,16 @@ while True:
         _flush_activity()
         fitness = _load_state().get("fitness", {})
         _log("INFO", "tick " + str(_tick_count) + " done  elapsed=" + elapsed + "  fitness=" + json.dumps(fitness))
+        _consecutive_errors = 0
 
     except Exception as e:
+        _consecutive_errors += 1
+        _tick_sleep = min(TICK_INTERVAL * (2 ** min(_consecutive_errors - 1, 4)), MAX_BACKOFF_SEC)
         _log_activity("-" * 72)
         _log_activity("ERROR " + str(e))
         _log_activity("")
         _flush_activity()
         _log_error("Tick " + str(_tick_count) + ": " + str(e))
-        _log("ERROR", "tick " + str(_tick_count) + " failed  error=" + str(e))
+        _log("ERROR", "tick " + str(_tick_count) + " failed  error=" + str(e) + "  backoff=" + str(_tick_sleep) + "s  consecutive=" + str(_consecutive_errors))
 
-    time.sleep(30)
+    time.sleep(_tick_sleep)

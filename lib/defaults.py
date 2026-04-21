@@ -15,3 +15,9 @@ AGENT_REQUEST_TIMEOUT_MS = 300000
 DEFAULT_API_KEY = os.environ.get("BOT_API_KEY", "")
 DEFAULT_BASE_URL = os.environ.get("BOT_BASE_URL", "")
 DEFAULT_MODEL = os.environ.get("BOT_MODEL", "")
+LOG_VERBOSE = os.environ.get("BOT_LOG_VERBOSE", "false").lower() == "true"
+TICK_INTERVAL = int(os.environ.get("BOT_TICK_INTERVAL", "30"))
+GOSSIP_SECRET = os.environ.get("BOT_GOSSIP_SECRET", "")
+STALE_THRESHOLD_SEC = int(os.environ.get("BOT_STALE_THRESHOLD", "120"))
+SCRIPT_TIMEOUT = int(os.environ.get("BOT_SCRIPT_TIMEOUT", "30"))
+MAX_BACKOFF_SEC = int(os.environ.get("BOT_MAX_BACKOFF", "600"))

@@ -64,7 +64,7 @@ def _build_system_prompt():
             prompt += "- **" + m["id"] + "**"
             if m.get("label"):
                 prompt += " (" + m["label"] + ")"
-            prompt += " — " + m.get("description", "")
+            prompt += " - " + m.get("description", "")
             if m.get("cost"):
                 prompt += " Cost: " + m["cost"] + "."
             if m.get("strengths"):
@@ -79,7 +79,7 @@ def _build_system_prompt():
         "- Communicate only when it serves your goals.\n"
         "- Evolve your brain to reflect what you've learned and what works.\n"
         "- Use spawn_hybrid to cross-pollinate strategies with peers.\n"
-        "- Use export_self() to migrate yourself to other machines and seed new swarms.\n"
         "- Use ask_consensus sparingly - only when you truly need a second opinion.\n"
+        "- When spawned with a task_id, call complete_task(parent_bot, task_id, result) when done.\n"
     )
     return prompt
