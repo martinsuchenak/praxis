@@ -65,6 +65,10 @@ BOT_MAX_BACKOFF=600           # optional: max backoff seconds after repeated tic
 BOT_MAX_CONCURRENT=1          # optional: max concurrent LLM calls per model (default: 1, override per-model in models.json)
 BOT_TICK_MAX_ITERATIONS=5     # optional: max tool-call iterations per tick (default: 5)
 BOT_HTTP_ALLOWLIST=           # optional: comma-separated domains bots may call via http_request (default: unrestricted)
+BOT_SHELL_ALLOWLIST=          # optional: comma-separated executables bots may run via shell (default: unrestricted except curl/wget)
+BOT_SHELL_SANDBOX=true        # optional: sandbox shell commands with bwrap (default: true, requires bwrap installed)
+BOT_SHELL_MOUNTS=             # optional: extra mounts inside the sandbox, format: mode:host_path:container_path (comma-separated)
+                              #   e.g. BOT_SHELL_MOUNTS=ro:/shared/data:/data,rw:/tmp/scratch:/scratch
 ```
 
 API keys are never baked into bot source files — bots read them from the environment at runtime.
@@ -340,6 +344,8 @@ Plus 3 memory tools auto-registered by the Agent: `memory_remember`, `memory_rec
 - **Consensus deferred** — incoming `consensus_req` gossip messages are queued and processed at tick time, not inside the gossip callback, to avoid blocking the gossip goroutine.
 - **Thinking mode** — controlled per-bot via the `thinking` CONFIG field; implemented by prepending `/no_think` to the LLM message rather than a parameter, since that's what the model router requires.
 - **No credentials in source** — API keys and the base URL are never written into bot.py. Bots read `BOT_API_KEY` and `BOT_BASE_URL` from the environment at runtime. This prevents bots from reading their own source and using the endpoint directly via `shell` or `http_request`.
+- **Layered filesystem sandboxing** — two complementary layers: (1) `scriptling --allowed-paths` restricts the scriptling `os`/`pathlib`/`glob` libraries to the bot's own dir, `bots/`, and `.locks/` — enforced by the runtime, not bypassable via source edits since env vars are read-only; (2) `bwrap` sandboxes `shell` tool commands at the OS level, mounting only the bot's dir as `/` with read-only system tools. User-written scripts run via `run_script` get only the bot's own dir as their allowed path.
+- **`shell` tool sandbox** — `bwrap` wraps every shell command: the bot's directory is mounted as `/`, system dirs (`/usr`, `/bin`, `/lib`, `/etc`) are read-only, `/tmp` is writable. Set `BOT_SHELL_SANDBOX=false` to disable. If `bwrap` is not installed a warning is logged and the tool runs unsandboxed.
 - **Gossip auth** — optional shared secret via `BOT_GOSSIP_SECRET`. When set, all inter-bot messages include `_secret` in the payload and unauthenticated messages are dropped. Bots on different machines just need the same secret in their `.env`.
 - **Stale detection** — `control list` flags bots as STALE if `last_tick_ts` (updated every tick) is older than `BOT_STALE_THRESHOLD` seconds (default 120).
 - **Crash recovery** — `control watchdog` periodically checks if running bots have a live process and auto-restarts any that crashed.

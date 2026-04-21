@@ -16,6 +16,12 @@ TEMPLATE_PATH = os.path.join(LIB_DIR, "botcore.py")
 DEFAULTS_PATH = os.path.join(LIB_DIR, "defaults.py")
 PROMPT_PATH = os.path.join(LIB_DIR, "prompt.py")
 STALE_THRESHOLD = 120
+LOCKS_DIR = os.path.join(PROJECT_DIR, ".locks")
+
+
+def _bot_allowed_paths(bot_id):
+    bot_dir = os.path.join(BOTS_DIR, bot_id)
+    return ",".join([bot_dir, BOTS_DIR, LOCKS_DIR])
 
 
 def _load_env_defaults():
@@ -110,7 +116,7 @@ def _inject_block(source, start_marker, end_marker, content):
         source[:start_idx]
         + start_marker + "\n"
         + content + "\n"
-        + end_marker
+        + end_marker + "\n"
         + source[end_idx + len(end_marker):]
     )
 
@@ -230,7 +236,7 @@ def cmd_start(bot_id):
         sys.exit(1)
     log_path = os.path.join(bot_dir, "output.log")
     subprocess.run(
-        "nohup scriptling " + bot_script + " > " + log_path + " 2>&1 &",
+        "nohup scriptling --allowed-paths=" + _bot_allowed_paths(bot_id) + " " + bot_script + " > " + log_path + " 2>&1 &",
         shell=True,
     )
     print("Started: " + bot_id)
@@ -382,7 +388,7 @@ def cmd_start_all():
             continue
         log_path = os.path.join(BOTS_DIR, entry, "output.log")
         subprocess.run(
-            "nohup scriptling " + bot_script + " > " + log_path + " 2>&1 &",
+            "nohup scriptling --allowed-paths=" + _bot_allowed_paths(entry) + " " + bot_script + " > " + log_path + " 2>&1 &",
             shell=True,
         )
         started += 1
@@ -443,7 +449,7 @@ def cmd_restart(bot_id):
     time.sleep(2)
     log_path = os.path.join(bot_dir, "output.log")
     subprocess.run(
-        "nohup scriptling " + bot_script + " > " + log_path + " 2>&1 &",
+        "nohup scriptling --allowed-paths=" + _bot_allowed_paths(bot_id) + " " + bot_script + " > " + log_path + " 2>&1 &",
         shell=True,
     )
     print("Restarted: " + bot_id)
@@ -551,7 +557,8 @@ def cmd_export(bot_id):
             "  echo \"No .env found. Copy .env.example to .env and fill in your credentials.\"\n"
             "  exit 1\n"
             "fi\n"
-            "nohup scriptling \"$PROJ_DIR/bots/" + bot_id + "/bot.py\" "
+            "nohup scriptling --allowed-paths=\"$PROJ_DIR/bots/" + bot_id + ",$PROJ_DIR/bots,$PROJ_DIR/.locks\" "
+            "\"$PROJ_DIR/bots/" + bot_id + "/bot.py\" "
             "> \"$PROJ_DIR/bots/" + bot_id + "/output.log\" 2>&1 &\n"
             "echo \"Started " + bot_id + " (PID $!)\"\n"
             "echo \"Manage with: scriptling bin/control.py list\"\n"
@@ -602,10 +609,23 @@ def cmd_watchdog():
         try:
             bots = _all_bots()
             for b in bots:
-                if b.get("status") not in ("running",):
-                    continue
                 bot_id = b["id"]
                 bot_script = os.path.join(BOTS_DIR, bot_id, "bot.py")
+
+                if b.get("status") == "created":
+                    if os.path.exists(bot_script):
+                        b["status"] = "starting"
+                        _save_status(bot_id, b)
+                        log_path = os.path.join(BOTS_DIR, bot_id, "output.log")
+                        subprocess.run(
+                            "nohup scriptling --allowed-paths=" + _bot_allowed_paths(bot_id) + " " + bot_script + " > " + log_path + " 2>&1 &",
+                            shell=True,
+                        )
+                        print(time.strftime("%Y-%m-%d %H:%M:%S") + "  Started spawned bot: " + bot_id)
+                    continue
+
+                if b.get("status") not in ("running",):
+                    continue
                 check = subprocess.run(
                     ["pgrep", "-f", bot_script],
                     capture_output=True,
@@ -614,7 +634,7 @@ def cmd_watchdog():
                     print(time.strftime("%Y-%m-%d %H:%M:%S") + "  Crash detected: " + bot_id + "  restarting...")
                     log_path = os.path.join(BOTS_DIR, bot_id, "output.log")
                     subprocess.run(
-                        "nohup scriptling " + bot_script + " >> " + log_path + " 2>&1 &",
+                        "nohup scriptling --allowed-paths=" + _bot_allowed_paths(bot_id) + " " + bot_script + " >> " + log_path + " 2>&1 &",
                         shell=True,
                     )
             time.sleep(interval)

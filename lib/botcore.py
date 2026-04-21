@@ -27,11 +27,15 @@ import uuid
 import time
 import random
 import subprocess
+import requests
+import glob as _glob
 
 BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_ID = CONFIG["name"]
 BOTS_DIR = os.path.dirname(BOT_DIR)
 LOCKS_DIR = os.path.join(os.path.dirname(BOTS_DIR), ".locks")
+
+_BWRAP_AVAILABLE = subprocess.run(["which", "bwrap"], capture_output=True).returncode == 0
 
 STATE_PATH = os.path.join(BOT_DIR, "state.json")
 STATUS_PATH = os.path.join(BOT_DIR, "status.json")
@@ -57,6 +61,7 @@ MAX_BACKOFF_SEC = 600
 BOT_MAX_CONCURRENT = 1
 TICK_MAX_ITERATIONS = 5
 HTTP_ALLOWLIST = []
+SHELL_ALLOWLIST = []
 # --- END DEFAULTS ---
 
 # --- MODELS ---
@@ -183,16 +188,9 @@ def _count_entities():
     if not os.path.exists(entities_dir):
         return 0
     try:
-        result = subprocess.run(
-            ["find", entities_dir, "-type", "f"],
-            capture_output=True, timeout=5,
-        )
-        if result.returncode == 0 and result.stdout:
-            lines = [l for l in str(result.stdout).split("\n") if l.strip()]
-            return len(lines)
+        return len(_glob.glob("**/*", entities_dir))
     except Exception:
-        pass
-    return 0
+        return 0
 
 
 def _model_concurrency_limit():
@@ -235,10 +233,16 @@ def _lock_model():
                 try:
                     ts = int(os.read_file(fpath).strip())
                     if now - ts > stale_age:
-                        subprocess.run(["rm", "-f", fpath])
+                        try:
+                            os.remove(fpath)
+                        except Exception:
+                            pass
                         continue
                 except Exception:
-                    subprocess.run(["rm", "-f", fpath])
+                    try:
+                        os.remove(fpath)
+                    except Exception:
+                        pass
                     continue
                 entries.append(fname)
             entries.sort()
@@ -263,7 +267,10 @@ def _unlock_model():
     try:
         for fname in os.listdir(queue_dir):
             if fname.endswith("_" + BOT_ID + ".wait"):
-                subprocess.run(["rm", "-f", os.path.join(queue_dir, fname)])
+                try:
+                    os.remove(os.path.join(queue_dir, fname))
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -549,6 +556,9 @@ mem = memory.new(db, ai_client=client, model=model_name)
 
 _migrate_state()
 
+if os.environ.get("BOT_SHELL_SANDBOX", "true").lower() != "false" and not _BWRAP_AVAILABLE:
+    _log("WARN", "bwrap not found — shell tool running unsandboxed. Install bwrap or set BOT_SHELL_SANDBOX=false to silence this.")
+
 initial_brain = CONFIG.get("brain", "")
 if initial_brain and not os.path.exists(BRAIN_PATH):
     tmp = BRAIN_PATH + ".tmp"
@@ -611,7 +621,7 @@ def _delete_file(args):
         return "Invalid path."
     if not os.path.exists(real_path):
         return "File not found: " + path
-    subprocess.run(["rm", "-f", real_path])
+    os.remove(real_path)
     return "Deleted: " + path
 
 
@@ -651,18 +661,65 @@ def _read_file_range(args):
 _SHELL_BLOCKED = ("curl", "wget")
 
 
+def _build_bwrap_cmd(command, cwd):
+    if os.environ.get("BOT_SHELL_SANDBOX", "true").lower() == "false":
+        return None
+    if not _BWRAP_AVAILABLE:
+        return None
+
+    try:
+        rel = os.path.relpath(cwd, BOT_DIR)
+        inner_cwd = "/" if rel.startswith("..") else ("/" + rel).rstrip("/") or "/"
+    except Exception:
+        inner_cwd = "/"
+
+    cmd = ["bwrap", "--chdir", inner_cwd, "--bind", BOT_DIR, "/"]
+
+    for sysdir in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/tmp"):
+        if not os.path.exists(sysdir):
+            continue
+        try:
+            rlink = subprocess.run(["readlink", sysdir], capture_output=True, timeout=5)
+            if rlink.returncode == 0:
+                cmd += ["--symlink", rlink.stdout.strip(), sysdir]
+            elif sysdir == "/tmp":
+                cmd += ["--bind", sysdir, sysdir]
+            else:
+                cmd += ["--ro-bind", sysdir, sysdir]
+        except Exception:
+            cmd += ["--ro-bind", sysdir, sysdir]
+
+    cmd += ["--proc", "/proc", "--dev", "/dev"]
+
+    for mount in [m.strip() for m in os.environ.get("BOT_SHELL_MOUNTS", "").split(",") if m.strip()]:
+        parts = mount.split(":", 2)
+        if len(parts) == 3:
+            mode, host, container = parts[0], parts[1], parts[2]
+            if os.path.exists(host):
+                cmd += ["--ro-bind" if mode == "ro" else "--bind", host, container]
+
+    cmd += ["--", "bash", "-c", command]
+    return cmd
+
+
 def _shell(args):
     command = args["command"]
     stripped = command.strip().lstrip("/ \t")
     first_word = stripped.split()[0].split("/")[-1] if stripped.split() else ""
     if first_word in _SHELL_BLOCKED:
         return "Error: " + first_word + " is not allowed in shell. Use the http_request tool instead."
-    timeout = int(args.get("timeout", "30"))
+    if SHELL_ALLOWLIST and first_word not in SHELL_ALLOWLIST:
+        return "Error: " + first_word + " is not in the shell allowlist (" + ", ".join(SHELL_ALLOWLIST) + ")."
+    timeout = int(args.get("timeout", SCRIPT_TIMEOUT))
     cwd = BOT_DIR
     if args.get("cwd"):
         cwd = _safe_path(BOT_DIR, args["cwd"]) or BOT_DIR
+    bwrap_cmd = _build_bwrap_cmd(command, cwd)
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, timeout=timeout, cwd=cwd)
+        if bwrap_cmd:
+            result = subprocess.run(bwrap_cmd, capture_output=True, timeout=timeout)
+        else:
+            result = subprocess.run(command, shell=True, capture_output=True, timeout=timeout, cwd=cwd)
         output = {"exit_code": result.returncode}
         if result.stdout:
             output["stdout"] = str(result.stdout)[:50000]
@@ -739,17 +796,17 @@ def _run_script(args):
         return "Invalid path."
     if not os.path.exists(real_path):
         return "Script not found: " + path
-    cmd = ["scriptling", real_path]
-    extra = args.get("args", "")
-    if extra:
-        cmd.append(extra)
     try:
-        result = subprocess.run(cmd, capture_output=True, shell=False, timeout=SCRIPT_TIMEOUT)
-        output = {"exit_code": result.returncode}
-        if result.stdout:
-            output["stdout"] = result.stdout
-        if result.stderr:
-            output["stderr"] = result.stderr
+        sb = runtime.sandbox.create(capture_output=True)
+        extra = args.get("args", "")
+        if extra:
+            sb.set("args", extra)
+        sb.exec_file(real_path)
+        exit_code = sb.exit_code()
+        output = {"exit_code": exit_code}
+        result = sb.get("result")
+        if result is not None:
+            output["result"] = result
         return json.dumps(output)
     except Exception as e:
         return "Error: " + str(e)
@@ -848,14 +905,18 @@ def _spawn_bot(args):
     if new_source is None:
         return "Error: source template corrupt."
     os.write_file(os.path.join(new_dir, "bot.py"), new_source)
+    _atomic_write_json(os.path.join(new_dir, "status.json"), {
+        "id": new_name,
+        "goal": new_goal,
+        "status": "created",
+        "created_at": int(time.time()),
+        "gossip_addr": "",
+        "fitness": {},
+    })
     state["_spawn_count"] = spawn_count + 1
     _save_state(state)
     _bump_fitness("spawns")
-    subprocess.run(
-        "nohup scriptling " + new_dir + "/bot.py > " + new_dir + "/output.log 2>&1 &",
-        shell=True,
-    )
-    return "Spawned: " + new_name
+    return "Spawned: " + new_name + " (watchdog will start it)"
 
 
 def _spawn_hybrid(args):
@@ -890,11 +951,9 @@ def _spawn_hybrid(args):
         return "No brain response from " + other_id + " within 10s."
 
     own_brain = _read_brain()
-    merged = (
-        "# Hybrid brain: " + BOT_ID + " x " + other_id + "\n\n"
-        "## From " + BOT_ID + ":\n" + own_brain + "\n\n"
-        "## From " + other_id + ":\n" + other_brain + "\n"
-    )
+    merged = "# Hybrid brain: " + BOT_ID + " x " + other_id + "\n\n"
+    merged += "## From " + BOT_ID + ":\n" + own_brain + "\n\n"
+    merged += "## From " + other_id + ":\n" + other_brain + "\n"
     new_model = args.get("model") or CONFIG["model"]
     return _spawn_bot({"name": new_name, "goal": new_goal, "brain": merged, "model": new_model})
 
@@ -926,10 +985,9 @@ def _query_model(args):
     use_thinking = args.get("thinking", True)
     try:
         final_prompt = prompt if use_thinking else "/no_think\n" + prompt
-        kwargs = {"max_tokens": 4096}
         if system:
-            kwargs["system_prompt"] = system
-        return client.ask(target_model, final_prompt, **kwargs)
+            return client.ask(target_model, final_prompt, system_prompt=system, max_tokens=4096)
+        return client.ask(target_model, final_prompt, max_tokens=4096)
     except Exception as e:
         return "Error querying " + target_model + ": " + str(e)
 
@@ -938,23 +996,6 @@ def _list_models(args):
     if not AVAILABLE_MODELS:
         return "No additional models available."
     return json.dumps(AVAILABLE_MODELS)
-
-
-def _parse_curl_output(result):
-    output = {}
-    if result.stdout:
-        body = str(result.stdout)
-        parts = body.rsplit("\n", 1)
-        if len(parts) == 2 and parts[1].strip().isdigit():
-            output["http_status"] = int(parts[1].strip())
-            output["body"] = parts[0][:50000]
-        else:
-            output["body"] = body[:50000]
-    if result.stderr:
-        output["error"] = str(result.stderr)
-    if result.returncode != 0:
-        output["curl_exit"] = result.returncode
-    return output
 
 
 def _http_allowed(url):
@@ -978,20 +1019,30 @@ def _http_request(args):
     method = args.get("method", "GET").upper()
     body = args.get("body", "")
     content_type = args.get("content_type", "")
-    headers = args.get("headers", "")
+    extra_headers = args.get("headers", "")
     timeout = int(args.get("timeout", "30"))
     try:
-        cmd = ["curl", "-sS", "-L", "-X", method, "--max-time", str(timeout), "-w", "\n%{http_code}"]
+        hdrs = {}
         if content_type:
-            cmd.extend(["-H", "Content-Type: " + content_type])
-        if headers:
-            for h in [h.strip() for h in headers.split(",") if h.strip()]:
-                cmd.extend(["-H", h])
-        if body:
-            cmd.extend(["-d", body])
-        cmd.append(url)
-        result = subprocess.run(cmd, capture_output=True, timeout=timeout + 5)
-        return json.dumps(_parse_curl_output(result))
+            hdrs["Content-Type"] = content_type
+        if extra_headers:
+            for h in [h.strip() for h in extra_headers.split(",") if h.strip()]:
+                if ":" in h:
+                    k, v = h.split(":", 1)
+                    hdrs[k.strip()] = v.strip()
+        if method == "GET":
+            resp = requests.get(url, timeout=timeout, headers=hdrs)
+        elif method == "POST":
+            resp = requests.post(url, data=body, timeout=timeout, headers=hdrs)
+        elif method == "PUT":
+            resp = requests.put(url, data=body, timeout=timeout, headers=hdrs)
+        elif method == "PATCH":
+            resp = requests.patch(url, data=body, timeout=timeout, headers=hdrs)
+        elif method == "DELETE":
+            resp = requests.delete(url, timeout=timeout, headers=hdrs)
+        else:
+            return "Error: unsupported method: " + method
+        return json.dumps({"http_status": resp.status_code, "body": resp.text[:50000]})
     except Exception as e:
         return "Error: " + str(e)
 
