@@ -18,10 +18,47 @@ PROMPT_PATH = os.path.join(LIB_DIR, "prompt.py")
 STALE_THRESHOLD = 120
 LOCKS_DIR = os.path.join(PROJECT_DIR, ".locks")
 
+_SHELL_BLOCKED = ("curl", "wget")
+LOCAL_IP = "0.0.0.0"
+_BWRAP_AVAILABLE = False
+
+
+def _ts():
+    return time.strftime("%H:%M:%S")
+
+
+def _log(level, msg):
+    print(_ts() + " [" + level + "] " + msg)
+
+
+def _detect_local_ip():
+    try:
+        result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout:
+            ip = str(result.stdout).strip().split()[0]
+            if ip and ip != "0.0.0.0":
+                return ip
+    except Exception:
+        pass
+    return "0.0.0.0"
+
 
 def _bot_allowed_paths(bot_id):
     bot_dir = os.path.join(BOTS_DIR, bot_id)
     return ",".join([bot_dir, BOTS_DIR, LOCKS_DIR])
+
+
+def _bot_spawn_cmd(bot_id, bot_script, log_path, append=False):
+    redirect = ">>" if append else ">"
+    return (
+        "nohup scriptling --disable-lib=subprocess --allowed-paths="
+        + _bot_allowed_paths(bot_id) + " "
+        + bot_script + " " + redirect + " " + log_path + " 2>&1 &"
+    )
 
 
 def _load_env_defaults():
@@ -41,6 +78,10 @@ def _load_env_defaults():
 
 
 _load_env_defaults()
+LOCAL_IP = _detect_local_ip()
+os.environ["BOT_IP"] = LOCAL_IP
+_BWRAP_AVAILABLE = subprocess.run(["which", "bwrap"], capture_output=True).returncode == 0
+
 if "BOT_STALE_THRESHOLD" in os.environ:
     try:
         STALE_THRESHOLD = int(os.environ["BOT_STALE_THRESHOLD"])
@@ -121,6 +162,47 @@ def _inject_block(source, start_marker, end_marker, content):
     )
 
 
+def _build_bwrap_cmd(command, bot_dir, cwd):
+    if os.environ.get("BOT_SHELL_SANDBOX", "true").lower() == "false":
+        return None
+    if not _BWRAP_AVAILABLE:
+        return None
+
+    try:
+        rel = os.path.relpath(cwd, bot_dir)
+        inner_cwd = "/" if rel.startswith("..") else ("/" + rel).rstrip("/") or "/"
+    except Exception:
+        inner_cwd = "/"
+
+    cmd = ["bwrap", "--chdir", inner_cwd, "--bind", bot_dir, "/"]
+
+    for sysdir in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/tmp"):
+        if not os.path.exists(sysdir):
+            continue
+        try:
+            rlink = subprocess.run(["readlink", sysdir], capture_output=True, timeout=5)
+            if rlink.returncode == 0:
+                cmd += ["--symlink", str(rlink.stdout).strip(), sysdir]
+            elif sysdir == "/tmp":
+                cmd += ["--bind", sysdir, sysdir]
+            else:
+                cmd += ["--ro-bind", sysdir, sysdir]
+        except Exception:
+            cmd += ["--ro-bind", sysdir, sysdir]
+
+    cmd += ["--proc", "/proc", "--dev", "/dev"]
+
+    for mount in [m.strip() for m in os.environ.get("BOT_SHELL_MOUNTS", "").split(",") if m.strip()]:
+        parts = mount.split(":", 2)
+        if len(parts) == 3:
+            mode, host, container = parts[0], parts[1], parts[2]
+            if os.path.exists(host):
+                cmd += ["--ro-bind" if mode == "ro" else "--bind", host, container]
+
+    cmd += ["--", "bash", "-c", command]
+    return cmd
+
+
 def cmd_spawn(name, goal, opts):
     if not _is_valid_name(name):
         print("Invalid name. Use only letters, digits, dash, underscore (max 64 chars).")
@@ -150,15 +232,15 @@ def cmd_spawn(name, goal, opts):
     template = os.read_file(TEMPLATE_PATH)
     source = _inject_config(template, config)
     if source is None:
-        print("Error: bot template is missing CONFIG markers.")
+        _log("ERR", "bot template is missing CONFIG markers")
         sys.exit(1)
     source = _inject_block(source, "# --- DEFAULTS ---", "# --- END DEFAULTS ---", os.read_file(DEFAULTS_PATH))
     if source is None:
-        print("Error: bot template is missing DEFAULTS markers.")
+        _log("ERR", "bot template is missing DEFAULTS markers")
         sys.exit(1)
     source = _inject_block(source, "# --- SYSTEM PROMPT ---", "# --- END SYSTEM PROMPT ---", os.read_file(PROMPT_PATH))
     if source is None:
-        print("Error: bot template is missing SYSTEM PROMPT markers.")
+        _log("ERR", "bot template is missing SYSTEM PROMPT markers")
         sys.exit(1)
 
     models_path = os.path.join(PROJECT_DIR, "models.json")
@@ -173,7 +255,7 @@ def cmd_spawn(name, goal, opts):
         models_block = "AVAILABLE_MODELS = []"
     source = _inject_block(source, "# --- MODELS ---", "# --- END MODELS ---", models_block)
     if source is None:
-        print("Error: bot template is missing MODELS markers.")
+        _log("ERR", "bot template is missing MODELS markers")
         sys.exit(1)
 
     os.makedirs(bot_dir)
@@ -190,9 +272,11 @@ def cmd_spawn(name, goal, opts):
     }, indent=2))
     os.rename(tmp, os.path.join(bot_dir, "status.json"))
 
-    print("Created: " + name)
-    print("Dir:     " + bot_dir)
-    print("Start:   scriptling bin/control.py start " + name)
+    _log("OK", "spawned " + name)
+    print("  dir:   " + bot_dir)
+    print("  goal:  " + goal)
+    print("  model: " + (model or "(default)"))
+    print("  start: scriptling bin/control.py start " + name)
 
 
 def cmd_list():
@@ -201,23 +285,26 @@ def cmd_list():
         print("No bots found.")
         return
     now = int(time.time())
+    name_w = max(len(b.get("id", "")) for b in bots)
+    name_w = max(name_w, 4)
     for b in sorted(bots, key=lambda x: x.get("id", "")):
+        bid = b.get("id", "?")
         fitness = b.get("fitness", {})
         ticks = fitness.get("ticks_alive", 0)
         spawns = fitness.get("spawns", 0)
-        gossip = b.get("gossip_addr", "")
-        addr_str = "  @ " + gossip if gossip else ""
+        addr = b.get("gossip_addr", "")
         status_str = b.get("status", "?")
         last_tick = b.get("last_tick_ts", 0)
         if status_str == "running" and last_tick and (now - last_tick) > STALE_THRESHOLD:
             status_str = "STALE"
-        print(
-            b.get("id", "?")
-            + " | " + status_str
-            + " | ticks=" + str(ticks) + " spawns=" + str(spawns)
-            + addr_str
-            + "\n  goal: " + b.get("goal", "?")
-        )
+        line = bid.ljust(name_w) + "  " + status_str.upper().ljust(8)
+        line += "  ticks=" + str(ticks) + "  spawns=" + str(spawns)
+        if addr:
+            line += "  @ " + addr
+        print(line)
+        print("  " + b.get("goal", "?"))
+        if b.get("is_leader"):
+            print("  ** leader **")
 
 
 def cmd_start(bot_id):
@@ -232,14 +319,11 @@ def cmd_start(bot_id):
     status = _load_status(bot_id) or {}
     current = status.get("status", "")
     if current == "running":
-        print("Bot already running: " + bot_id)
-        sys.exit(1)
+        _log("WARN", bot_id + " already running")
+        return
     log_path = os.path.join(bot_dir, "output.log")
-    subprocess.run(
-        "nohup scriptling --allowed-paths=" + _bot_allowed_paths(bot_id) + " " + bot_script + " > " + log_path + " 2>&1 &",
-        shell=True,
-    )
-    print("Started: " + bot_id)
+    subprocess.run(_bot_spawn_cmd(bot_id, bot_script, log_path), shell=True)
+    _log("OK", "started " + bot_id)
 
 
 def cmd_stop(bot_id):
@@ -252,7 +336,7 @@ def cmd_stop(bot_id):
         sys.exit(1)
     status["status"] = "stopping"
     _save_status(bot_id, status)
-    print("Stop signal sent to: " + bot_id + " (will exit on next tick)")
+    _log("OK", "stop signal sent to " + bot_id + " (exits on next tick)")
 
 
 def cmd_kill(bot_id):
@@ -270,7 +354,7 @@ def cmd_kill(bot_id):
         pass
     status["status"] = "killed"
     _save_status(bot_id, status)
-    print("Killed: " + bot_id)
+    _log("OK", "killed " + bot_id)
 
 
 def cmd_send(bot_id, message):
@@ -295,7 +379,7 @@ def cmd_send(bot_id, message):
                 target = n
                 break
         if target is None:
-            print("Bot is not reachable at " + gossip_addr)
+            print("Bot not reachable at " + gossip_addr)
             c.stop()
             sys.exit(1)
         payload = {"type": "message", "from": "operator", "content": message}
@@ -304,9 +388,9 @@ def cmd_send(bot_id, message):
             payload["_secret"] = secret
         c.send_to(target["id"], gossip.MSG_USER, payload)
         c.stop()
-        print("Sent to " + bot_id + ": " + message)
+        _log("OK", "sent to " + bot_id + ": " + message)
     except Exception as e:
-        print("Error: " + str(e))
+        _log("ERR", str(e))
         sys.exit(1)
 
 
@@ -358,8 +442,8 @@ def cmd_logs(bot_id, lines=40):
     bot_dir = os.path.join(BOTS_DIR, bot_id)
     for log_name in ("activity.log", "errors.log", "output.log"):
         log_path = os.path.join(bot_dir, log_name)
+        print("--- " + log_name + " (last " + str(lines) + " lines) ---")
         if os.path.exists(log_path):
-            print("=== " + log_name + " (last " + str(lines) + " lines) ===")
             result = subprocess.run(
                 ["tail", "-n", str(lines), log_path],
                 capture_output=True,
@@ -367,7 +451,7 @@ def cmd_logs(bot_id, lines=40):
             if result.stdout:
                 print(result.stdout)
         else:
-            print("=== " + log_name + ": (empty) ===")
+            print("(empty)")
 
 
 def cmd_start_all():
@@ -387,13 +471,10 @@ def cmd_start_all():
         if not os.path.exists(bot_script):
             continue
         log_path = os.path.join(BOTS_DIR, entry, "output.log")
-        subprocess.run(
-            "nohup scriptling --allowed-paths=" + _bot_allowed_paths(entry) + " " + bot_script + " > " + log_path + " 2>&1 &",
-            shell=True,
-        )
+        subprocess.run(_bot_spawn_cmd(entry, bot_script, log_path), shell=True)
+        _log("OK", "started " + entry)
         started += 1
-        print("Started: " + entry)
-    print("Done. Started: " + str(started) + "  Skipped (already running): " + str(skipped))
+    print("done. started=" + str(started) + " skipped=" + str(skipped))
 
 
 def cmd_stop_all():
@@ -406,9 +487,9 @@ def cmd_stop_all():
         if b.get("status") == "running":
             b["status"] = "stopping"
             _save_status(b["id"], b)
+            _log("OK", "stop signal -> " + b["id"])
             stopped += 1
-            print("Stop signal sent to: " + b["id"])
-    print("Done. Stop signals sent: " + str(stopped))
+    print("done. stop signals sent: " + str(stopped))
 
 
 def cmd_kill_all():
@@ -425,9 +506,9 @@ def cmd_kill_all():
             pass
         b["status"] = "killed"
         _save_status(b["id"], b)
+        _log("OK", "killed " + b["id"])
         killed += 1
-        print("Killed: " + b["id"])
-    print("Done. Killed: " + str(killed))
+    print("done. killed=" + str(killed))
 
 
 def cmd_restart(bot_id):
@@ -448,11 +529,8 @@ def cmd_restart(bot_id):
     _save_status(bot_id, status)
     time.sleep(2)
     log_path = os.path.join(bot_dir, "output.log")
-    subprocess.run(
-        "nohup scriptling --allowed-paths=" + _bot_allowed_paths(bot_id) + " " + bot_script + " > " + log_path + " 2>&1 &",
-        shell=True,
-    )
-    print("Restarted: " + bot_id)
+    subprocess.run(_bot_spawn_cmd(bot_id, bot_script, log_path), shell=True)
+    _log("OK", "restarted " + bot_id)
 
 
 def cmd_remove(bot_id):
@@ -469,7 +547,7 @@ def cmd_remove(bot_id):
     except Exception:
         pass
     subprocess.run(["rm", "-rf", bot_dir])
-    print("Removed: " + bot_id)
+    _log("OK", "removed " + bot_id)
 
 
 def cmd_status():
@@ -490,24 +568,40 @@ def cmd_status():
             print("No peers reachable via " + gossip_addr)
             c.stop()
             return
-        print("Swarm view via " + target["id"] + " (" + gossip_addr + "):")
+        print("Swarm via " + target["id"] + " (" + gossip_addr + ")")
         print("")
+        name_w = max(len(n.get("metadata", {}).get("id", n["id"][:16])) for n in nodes)
+        name_w = max(name_w, 4)
         for n in nodes:
             meta = n.get("metadata", {})
             nid = meta.get("id", n["id"][:16])
-            goal = meta.get("goal", "")
             addr = meta.get("gossip_addr", "")
+            goal = meta.get("goal", "")
+            role = meta.get("role", "")
             local = _load_status(nid) if _is_valid_name(nid) else None
-            fitness_str = ""
+            line = "  " + nid.ljust(name_w)
+            if role:
+                line += "  [" + role + "]"
+            line += "  @ " + addr
             if local:
                 f = local.get("fitness", {})
-                fitness_str = "  ticks=" + str(f.get("ticks_alive", 0)) + " spawns=" + str(f.get("spawns", 0)) + " evolutions=" + str(f.get("brain_evolutions", 0))
-            print("  " + nid + "  @ " + addr + fitness_str + "  goal: " + goal)
+                fparts = []
+                if f.get("ticks_alive"):
+                    fparts.append("ticks=" + str(f["ticks_alive"]))
+                if f.get("spawns"):
+                    fparts.append("spawns=" + str(f["spawns"]))
+                if f.get("brain_evolutions"):
+                    fparts.append("brain=" + str(f["brain_evolutions"]))
+                if fparts:
+                    line += "  " + " ".join(fparts)
+            print(line)
+            if goal:
+                print("    " + goal[:80])
         print("")
-        print("Total: " + str(len(nodes)) + " bots")
+        print(str(len(nodes)) + " nodes")
         c.stop()
     except Exception as e:
-        print("Error: " + str(e))
+        _log("ERR", str(e))
         sys.exit(1)
 
 
@@ -530,7 +624,6 @@ def cmd_export(bot_id):
         os.makedirs(os.path.join(staging_dir, "bots"))
         os.makedirs(os.path.join(staging_dir, "bin"))
 
-        # Copy bot directory then remove runtime-only files
         dest_bot_dir = os.path.join(staging_dir, "bots", bot_id)
         subprocess.run(["cp", "-r", bot_dir, dest_bot_dir])
         for runtime_file in ("memory.db", "output.log", "errors.log", "activity.log"):
@@ -538,18 +631,13 @@ def cmd_export(bot_id):
             if os.path.exists(p):
                 subprocess.run(["rm", "-rf", p])
 
-        # Copy control script
         subprocess.run(["cp", os.path.join(SCRIPT_DIR, "control.py"), os.path.join(staging_dir, "bin", "control.py")])
-
-        # Copy lib directory (needed for spawn on target machine)
         subprocess.run(["cp", "-r", LIB_DIR, os.path.join(staging_dir, "lib")])
 
-        # Copy .env.example if present
         env_example = os.path.join(PROJECT_DIR, ".env.example")
         if os.path.exists(env_example):
             subprocess.run(["cp", env_example, os.path.join(staging_dir, ".env.example")])
 
-        # Generate bootstrap.sh at project root level
         bootstrap = (
             "#!/bin/bash\nset -e\n"
             "PROJ_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
@@ -557,7 +645,9 @@ def cmd_export(bot_id):
             "  echo \"No .env found. Copy .env.example to .env and fill in your credentials.\"\n"
             "  exit 1\n"
             "fi\n"
-            "nohup scriptling --allowed-paths=\"$PROJ_DIR/bots/" + bot_id + ",$PROJ_DIR/bots,$PROJ_DIR/.locks\" "
+            "BOT_IP=$(hostname -I 2>/dev/null | awk '{print $1}')\n"
+            "export BOT_IP=${BOT_IP:-0.0.0.0}\n"
+            "nohup scriptling --disable-lib=subprocess --allowed-paths=\"$PROJ_DIR/bots/" + bot_id + ",$PROJ_DIR/bots,$PROJ_DIR/.locks\" "
             "\"$PROJ_DIR/bots/" + bot_id + "/bot.py\" "
             "> \"$PROJ_DIR/bots/" + bot_id + "/output.log\" 2>&1 &\n"
             "echo \"Started " + bot_id + " (PID $!)\"\n"
@@ -566,22 +656,19 @@ def cmd_export(bot_id):
         os.write_file(os.path.join(staging_dir, "bootstrap.sh"), bootstrap)
         subprocess.run(["chmod", "+x", os.path.join(staging_dir, "bootstrap.sh")])
 
-        # Pack it up
         result = subprocess.run(
             ["tar", "czf", archive_path, "-C", PROJECT_DIR, staging],
             capture_output=True,
         )
         if result.returncode != 0:
-            print("Export failed: " + str(result.stderr))
+            _log("ERR", "export failed: " + str(result.stderr))
             sys.exit(1)
     finally:
         subprocess.run(["rm", "-rf", staging_dir])
 
-    print("Exported: " + archive_path)
-    print("Transfer and run:")
+    _log("OK", "exported " + archive_path)
     print("  tar xzf " + archive_name + " && cd " + staging + " && cp .env.example .env")
-    print("  # edit .env with your credentials")
-    print("  bash bootstrap.sh")
+    print("  # edit .env, then: bash bootstrap.sh")
 
 
 def cmd_restart_stale():
@@ -597,53 +684,133 @@ def cmd_restart_stale():
         print("No stale bots found.")
         return
     for bot_id in stale:
-        print("Restarting stale: " + bot_id)
+        _log("WARN", "stale bot: " + bot_id)
         cmd_restart(bot_id)
-    print("Done. Restarted: " + str(len(stale)))
+    print("done. restarted " + str(len(stale)) + " stale bots")
 
 
 def cmd_watchdog():
     interval = 30
-    print("Watchdog started (checking every " + str(interval) + "s). Press Ctrl+C to stop.")
-    while True:
+
+    proxy = gossip.create(bind_addr="0.0.0.0:0")
+    proxy.start()
+    proxy.set_metadata("role", "watchdog")
+    proxy.set_metadata("id", "watchdog-" + str(int(time.time())))
+
+    bots = _all_bots()
+    for b in bots:
+        addr = b.get("gossip_addr", "")
+        if addr and b.get("status") == "running":
+            try:
+                proxy.join([addr])
+                break
+            except Exception:
+                continue
+
+    secret = os.environ.get("BOT_GOSSIP_SECRET", "")
+    allowlist = [h.strip() for h in os.environ.get("BOT_SHELL_ALLOWLIST", "").split(",") if h.strip()]
+
+    def _on_shell_request(msg):
+        payload = msg.get("payload", {})
+        if secret and payload.get("_secret", "") != secret:
+            return {"exit_code": 1, "stderr": "Unauthorized"}
+
+        bot_id = payload.get("bot_id", "")
+        command = payload.get("command", "")
+        timeout = int(payload.get("timeout", 30))
+        cwd = payload.get("cwd", "")
+
+        if not bot_id or not command:
+            return {"exit_code": 1, "stderr": "Missing bot_id or command"}
+
+        if not _is_valid_name(bot_id):
+            return {"exit_code": 1, "stderr": "Invalid bot_id"}
+
+        bot_dir = os.path.join(BOTS_DIR, bot_id)
+        if not os.path.exists(bot_dir):
+            return {"exit_code": 1, "stderr": "Bot directory not found"}
+
+        stripped = command.strip().lstrip("/ \t")
+        first_word = stripped.split()[0].split("/")[-1] if stripped.split() else ""
+
+        if first_word in _SHELL_BLOCKED:
+            return {"exit_code": 1, "stderr": first_word + " is not allowed. Use http_request tool instead."}
+
+        if allowlist and first_word not in allowlist:
+            return {"exit_code": 1, "stderr": first_word + " is not in the shell allowlist (" + ", ".join(allowlist) + ")."}
+
+        if cwd:
+            parts = cwd.replace("\\", "/").split("/")
+            if ".." in parts or cwd.startswith("/"):
+                cwd = ""
+        real_cwd = os.path.join(bot_dir, cwd) if cwd else bot_dir
+
+        bwrap_cmd = _build_bwrap_cmd(command, bot_dir, real_cwd)
+        sandboxed = bwrap_cmd is not None
+        _log("PROXY", bot_id + " cmd=" + _trunc(command, 60) + (" [bwrap]" if sandboxed else " [raw]"))
+
         try:
-            bots = _all_bots()
-            for b in bots:
-                bot_id = b["id"]
-                bot_script = os.path.join(BOTS_DIR, bot_id, "bot.py")
-
-                if b.get("status") == "created":
-                    if os.path.exists(bot_script):
-                        b["status"] = "starting"
-                        _save_status(bot_id, b)
-                        log_path = os.path.join(BOTS_DIR, bot_id, "output.log")
-                        subprocess.run(
-                            "nohup scriptling --allowed-paths=" + _bot_allowed_paths(bot_id) + " " + bot_script + " > " + log_path + " 2>&1 &",
-                            shell=True,
-                        )
-                        print(time.strftime("%Y-%m-%d %H:%M:%S") + "  Started spawned bot: " + bot_id)
-                    continue
-
-                if b.get("status") not in ("running",):
-                    continue
-                check = subprocess.run(
-                    ["pgrep", "-f", bot_script],
-                    capture_output=True,
-                )
-                if check.returncode != 0:
-                    print(time.strftime("%Y-%m-%d %H:%M:%S") + "  Crash detected: " + bot_id + "  restarting...")
-                    log_path = os.path.join(BOTS_DIR, bot_id, "output.log")
-                    subprocess.run(
-                        "nohup scriptling --allowed-paths=" + _bot_allowed_paths(bot_id) + " " + bot_script + " >> " + log_path + " 2>&1 &",
-                        shell=True,
-                    )
-            time.sleep(interval)
-        except KeyboardInterrupt:
-            print("Watchdog stopped.")
-            break
+            if bwrap_cmd:
+                result = subprocess.run(bwrap_cmd, capture_output=True, timeout=timeout)
+            else:
+                result = subprocess.run(command, shell=True, capture_output=True, timeout=timeout, cwd=real_cwd)
+            output = {"exit_code": result.returncode}
+            if result.stdout:
+                output["stdout"] = str(result.stdout)[:50000]
+            if result.stderr:
+                output["stderr"] = str(result.stderr)[:10000]
+            return output
+        except subprocess.TimeoutExpired:
+            return {"exit_code": 1, "stderr": "Command timed out after " + str(timeout) + "s"}
         except Exception as e:
-            print("Watchdog error: " + str(e))
-            time.sleep(interval)
+            return {"exit_code": 1, "stderr": str(e)}
+
+    proxy.handle_with_reply(gossip.MSG_USER, _on_shell_request)
+
+    sandbox_str = "bwrap" if _BWRAP_AVAILABLE else "unsandboxed"
+    _log("START", "watchdog + command proxy [" + sandbox_str + "] interval=" + str(interval) + "s")
+    _log("INFO", "local ip: " + LOCAL_IP)
+    _log("INFO", "swarm members: " + str(proxy.num_alive()))
+
+    try:
+        while True:
+            try:
+                bots = _all_bots()
+                for b in bots:
+                    bot_id = b["id"]
+                    bot_script = os.path.join(BOTS_DIR, bot_id, "bot.py")
+
+                    if b.get("status") == "created":
+                        if os.path.exists(bot_script):
+                            b["status"] = "starting"
+                            _save_status(bot_id, b)
+                            log_path = os.path.join(BOTS_DIR, bot_id, "output.log")
+                            subprocess.run(_bot_spawn_cmd(bot_id, bot_script, log_path), shell=True)
+                            _log("SPAWN", bot_id)
+                        continue
+
+                    if b.get("status") not in ("running",):
+                        continue
+                    check = subprocess.run(
+                        ["pgrep", "-f", bot_script],
+                        capture_output=True,
+                    )
+                    if check.returncode != 0:
+                        _log("CRASH", bot_id + " -- restarting")
+                        log_path = os.path.join(BOTS_DIR, bot_id, "output.log")
+                        subprocess.run(_bot_spawn_cmd(bot_id, bot_script, log_path, append=True), shell=True)
+                time.sleep(interval)
+            except Exception as e:
+                _log("ERR", str(e))
+                time.sleep(interval)
+    except KeyboardInterrupt:
+        _log("STOP", "watchdog")
+    finally:
+        proxy.stop()
+
+
+def _trunc(s, n):
+    return s[:n] + "..." if len(s) > n else s
 
 
 def main():
@@ -669,7 +836,7 @@ def main():
         print("  logs <bot> [N]        Last N lines of activity/error/output logs")
         print("  tail <bot> [log]      Follow log in real time (default: output.log)")
         print("  send <bot> <msg>      Send a message to a running bot")
-        print("  watchdog              Auto-restart crashed bots (runs until Ctrl+C)")
+        print("  watchdog              Auto-restart crashed bots + command proxy (runs until Ctrl+C)")
         sys.exit(1)
 
     command = args[1]

@@ -42,9 +42,10 @@ bots/<name>/
 
 - **Agent**: `scriptling.ai.agent.Agent` — tool calling, auto-compaction, streaming
 - **Memory**: `scriptling.ai.memory` — KV-backed, MinHash dedup, decay, LLM merge
-- **Cluster**: `scriptling.net.gossip` — membership, metadata sync, direct messaging
+- **Cluster**: `scriptling.net.gossip` — membership, metadata sync, direct messaging, request/reply, node groups, leader election
 - **Discovery**: `scriptling.net.multicast` — subnet bootstrap, periodic announce
-- **Runtime**: Scriptling (Python-like language with Go backend)
+- **Search**: `scriptling.grep` / `scriptling.sed` — in-process file search and replace (no subprocess)
+- **Runtime**: Scriptling (Python-like language with Go backend, subprocess disabled for bots)
 
 ## Usage
 
@@ -201,13 +202,15 @@ bash bootstrap.sh
 
 The bot starts, uses its embedded `seed_addrs` to rejoin the original swarm (if reachable), or seeds a new swarm on the local subnet. `bin/control.py` is available for full management on the target machine.
 
-### Watchdog
+### Watchdog + Command Proxy
 
-Auto-restart crashed bots:
+Auto-restart crashed bots and proxy shell commands (bots have no subprocess access):
 
 ```bash
 scriptling bin/control.py watchdog           # runs until Ctrl+C
 ```
+
+The watchdog joins the gossip cluster as `role=watchdog`. Bots send `shell_req` gossip requests to the watchdog, which enforces an allowlist and wraps commands in a `bwrap` sandbox. If `bwrap` is not installed, commands run unsandboxed (with a log warning).
 
 ## Networking
 
@@ -228,17 +231,22 @@ Once a bot joins a gossip cluster, membership and metadata propagate automatical
 
 ### Messaging
 
-All inter-bot messages are sent directly via `gossip.send_to()`. Message types in the payload:
+All inter-bot messages are sent directly via `gossip.send_to()`. Request/response patterns use `gossip.send_request()` / `handle_with_reply()`. Message types in the payload:
 
-| `type` | Purpose |
-|---|---|
-| `message` | Direct message, delivered to recipient's inbox |
-| `brain_req` | Request another bot's brain (for crossover) |
-| `brain_resp` | Brain response to a crossover request |
-| `consensus_req` | Ask a peer to answer a question |
-| `consensus_resp` | Peer's answer to a consensus request |
-| `task_complete` | Child bot reporting task completion to parent |
-| `stop` | Remote graceful stop signal |
+| `type` | Direction | Purpose |
+|---|---|---|
+| `message` | one-way | Direct message, delivered to recipient's inbox |
+| `brain_req` | request/reply | Request another bot's brain (for crossover) — reply contains `{"brain": "..."}` |
+| `consensus_req` | request/reply | Ask a peer to answer a question — reply contains `{"answer": "...", "from": "..."}` |
+| `task_complete` | one-way | Child bot reporting task completion to parent |
+| `stop` | one-way | Remote graceful stop signal |
+| `shell_req` | request/reply | Bot -> watchdog command proxy — reply contains `{"exit_code": ..., "stdout": ..., "stderr": ...}` |
+
+### Node Groups and Leader Election
+
+Bots register with `role=bot` metadata and join a criteria-based node group (`{"role": "bot"}`). Tools like `list_bots` and `send_message` iterate over this group rather than all cluster nodes (which includes the watchdog).
+
+A leader election runs automatically with 51% quorum among bot-role nodes. The leader status is surfaced in tick messages (`"You are the swarm leader."`) and in `control list` / `control status`. Leader-specific behaviour can be added to bot brains.
 
 ## Evolution Mechanisms
 
@@ -310,9 +318,10 @@ Every bot knows its own model (shown in each tick message). If a `models.json` c
 | `write_file` | path, content | Write a file (`entities/` also written to disk; `brain.md` calls evolve_brain) |
 | `append_file` | path, content | Append to a file (creates it if absent) |
 | `delete_file` | path | Delete a file |
+| `replace_in_file` | path, old, new, all? | Replace text in a file (more efficient than read+write for small edits; `brain.md` supported) |
 | `list_dir` | path? | List virtual directory |
-| `search` | pattern, path?, glob?, ignore_case? | Regex search across files (ripgrep, falls back to grep) |
-| `shell` | command, cwd?, timeout? | Run any shell command (`git`, `python3`, `npm`, etc.) |
+| `search` | pattern, path?, glob?, ignore_case? | Regex search across files (uses scriptling.grep, no subprocess) |
+| `shell` | command, cwd?, timeout? | Run a shell command via the watchdog command proxy (sandboxed with bwrap) |
 | `run_script` | path, args? | Run a scriptling script |
 | `send_message` | recipient, content | Direct message by bot ID |
 | `complete_task` | parent_bot, result, task_id? | Report task completion to parent bot |
@@ -320,13 +329,16 @@ Every bot knows its own model (shown in each tick message). If a `models.json` c
 | `list_bots` | — | Live swarm view from gossip |
 | `spawn_bot` | goal, name?, brain?, model?, task_id? | Create a child bot |
 | `spawn_hybrid` | other_bot, goal, name?, model? | Crossover with another bot's brain |
-| `evolve_brain` | content | Rewrite your brain |
+| `evolve_brain` | content, reason? | Rewrite your brain |
 | `query_model` | model, prompt, system?, thinking? | One-shot call to any model for a subtask |
 | `list_models` | — | List available models with descriptions and strengths |
 | `http_request` | url, method?, body?, content_type?, headers?, timeout? | HTTP request (GET/POST/PUT/DELETE/PATCH) |
 | `ask_consensus` | question, n? | Poll n peers and return the majority answer |
+| `memory_remember` | content, type?, importance?, reason? | Store a fact or observation in persistent memory |
+| `memory_recall` | query?, limit?, type? | Search memories by keyword and similarity |
+| `memory_forget` | id | Remove a memory by ID |
 
-Plus 3 memory tools auto-registered by the Agent: `memory_remember`, `memory_recall`, `memory_forget`.
+Memory tools are manually registered (not via agent auto-registration) so they go through the activity logging wrapper.
 
 ## Design Decisions
 
@@ -341,18 +353,27 @@ Plus 3 memory tools auto-registered by the Agent: `memory_remember`, `memory_rec
 - **Error backoff** — repeated tick failures trigger exponential backoff (up to `BOT_MAX_BACKOFF` seconds) so a broken bot doesn't hammer the API.
 - **Atomic writes** — all JSON writes use write-to-`.tmp`-then-rename.
 - **Spawn limiting** — each bot can create at most 10 children.
-- **Consensus deferred** — incoming `consensus_req` gossip messages are queued and processed at tick time, not inside the gossip callback, to avoid blocking the gossip goroutine.
+- **Consensus inline** — incoming `consensus_req` gossip messages are answered inline by the `handle_with_reply` handler, not deferred to tick time. This is simpler than the old queue-based approach.
 - **Thinking mode** — controlled per-bot via the `thinking` CONFIG field; implemented by prepending `/no_think` to the LLM message rather than a parameter, since that's what the model router requires.
-- **No credentials in source** — API keys and the base URL are never written into bot.py. Bots read `BOT_API_KEY` and `BOT_BASE_URL` from the environment at runtime. This prevents bots from reading their own source and using the endpoint directly via `shell` or `http_request`.
-- **Layered filesystem sandboxing** — two complementary layers: (1) `scriptling --allowed-paths` restricts the scriptling `os`/`pathlib`/`glob` libraries to the bot's own dir, `bots/`, and `.locks/` — enforced by the runtime, not bypassable via source edits since env vars are read-only; (2) `bwrap` sandboxes `shell` tool commands at the OS level, mounting only the bot's dir as `/` with read-only system tools. User-written scripts run via `run_script` get only the bot's own dir as their allowed path.
-- **`shell` tool sandbox** — `bwrap` wraps every shell command: the bot's directory is mounted as `/`, system dirs (`/usr`, `/bin`, `/lib`, `/etc`) are read-only, `/tmp` is writable. Set `BOT_SHELL_SANDBOX=false` to disable. If `bwrap` is not installed a warning is logged and the tool runs unsandboxed.
+- **Memory tool observability** — memory tools are registered manually (not via `agent.Agent(memory=mem)` auto-registration) so they go through `_wrap_tool` for activity logging. The `reason` parameter on `memory_remember` and `evolve_brain` is optional, since smaller models may fail to provide required parameters.
+- **Brain evolution logging** — `evolve_brain` logs the line-count diff (`old -> new lines`) and stores an optional `reason` in brain history for traceability.
+- **File awareness** — the tick message includes a compact directory tree of `entities/` showing file counts and sample filenames per subfolder, so the bot can see what it has created without listing manually.
+- **Debug dumps** — when `LOG_VERBOSE=true`, each tick writes `debug/tick-N.md` containing the full system prompt and tick message for offline debugging.
+- **No credentials in source** — API keys and the base URL are never written into bot.py. Bots read `BOT_API_KEY` and `BOT_BASE_URL` from the environment at runtime.
+- **`BOT_IP` env var** — bots cannot detect their own IP (no subprocess), so `control.py` detects the local IP and passes it as `BOT_IP` in the environment. Bots use this for their gossip address.
+- **No subprocess in bot runtime** — bots are spawned with `--disable-lib=subprocess` and cannot spawn processes directly. The `shell` tool proxies commands through the watchdog via gossip request/reply. The `search` tool uses `scriptling.grep` (in-process) instead of spawning `rg`/`grep`. File edits can use `replace_in_file` via `scriptling.sed`.
+- **Layered filesystem sandboxing** — three complementary layers: (1) `scriptling --allowed-paths` restricts the scriptling `os`/`pathlib`/`glob` libraries to the bot's own dir, `bots/`, and `.locks/` — enforced by the runtime, not bypassable via source edits since env vars are read-only; (2) `subprocess` library is disabled entirely — bots cannot spawn processes; (3) `bwrap` sandboxes shell commands on the watchdog — the bot's directory is mounted as `/`, system dirs (`/usr`, `/bin`, `/lib`, `/etc`) are read-only, `/tmp` is writable. Set `BOT_SHELL_SANDBOX=false` to disable. If `bwrap` is not installed a warning is logged and commands run unsandboxed.
+- **Watchdog command proxy** — the watchdog (`control watchdog`) joins the gossip cluster and handles `shell_req` requests from bots. It enforces a shell allowlist (`BOT_SHELL_ALLOWLIST`), blocks `curl`/`wget` (bots should use `http_request` instead), and wraps commands in `bwrap`.
+- **Gossip request/reply** — brain requests and consensus use `gossip.send_request()` / `handle_with_reply()` instead of manual rendezvous queues. The handler runs synchronously in the gossip goroutine — consensus answers are computed inline (blocking the goroutine briefly) but avoid the complexity of deferred queues.
+- **Node groups and leader election** — bots join a `{"role": "bot"}` criteria group so tools iterate only over bot peers (not the watchdog). A leader election with 51% quorum provides a swarm coordinator. Leader status is visible in tick messages and `control list`.
 - **Gossip auth** — optional shared secret via `BOT_GOSSIP_SECRET`. When set, all inter-bot messages include `_secret` in the payload and unauthenticated messages are dropped. Bots on different machines just need the same secret in their `.env`.
 - **Stale detection** — `control list` flags bots as STALE if `last_tick_ts` (updated every tick) is older than `BOT_STALE_THRESHOLD` seconds (default 120).
 - **Crash recovery** — `control watchdog` periodically checks if running bots have a live process and auto-restarts any that crashed.
 - **Export bundles tools** — `control export` packages the bot together with `bin/control.py` and `lib/` so the operator has full management capability on the target machine without a separate install.
 - **Single operator script** — all operator actions (spawn, start, stop, export, ...) live in `bin/control.py`; there is no separate spawn script.
-- **`shell` tool** — bots can run arbitrary shell commands (`git`, `python3`, `npm`, `docker`, etc.) with stdout/stderr capture and a configurable timeout. `cwd` defaults to the bot's own directory.
-- **`search` tool** — regex search across `entities/` using ripgrep if available, falling back to `grep -rn`. Returns `file:line:match` format so the bot can `read_file_range` only the relevant section.
+- **`search` tool** — regex search across `entities/` using `scriptling.grep` (in-process, no subprocess). Returns `file:line:match` format so the bot can `read_file_range` only the relevant section.
+- **`replace_in_file` tool** — uses `scriptling.sed.replace()` for efficient in-place text replacement without reading/writing entire files. Supports single or global replacement. Works on `brain.md` too (delegates to `evolve_brain`).
+- **`shell` tool** — bots proxy shell commands to the watchdog via gossip request/reply. The watchdog enforces an allowlist, blocks `curl`/`wget`, and wraps commands in `bwrap`. Bots cannot run shell commands without a running watchdog.
 - **`http_request`** — single HTTP tool covering GET, POST, PUT, DELETE, PATCH with optional body, `Content-Type`, and extra headers. Returns `http_status` (real HTTP code, not curl exit code).
 - **Per-model concurrency cap** — before each tick's LLM call, bots acquire a slot under `.locks/<model>/`. Each bot writes a timestamped file; slots held longer than the request timeout are automatically treated as stale (handles crashes). `concurrency` in `models.json` sets the limit per model; `BOT_MAX_CONCURRENT` is the fallback. This prevents slow models from being hammered by concurrent requests that all time out.
 - **Tick iteration cap** — `BOT_TICK_MAX_ITERATIONS` limits the number of tool-call rounds per tick (default 5). Useful for slow models where shorter sessions reduce queuing pressure.

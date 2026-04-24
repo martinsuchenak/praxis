@@ -20,13 +20,14 @@ import scriptling.runtime as runtime
 import scriptling.runtime.kv as kv
 import scriptling.net.gossip as gossip
 import scriptling.net.multicast as mc
+import scriptling.grep as greplib
+import scriptling.sed as sedlib
 import os
 import os.path
 import json
 import uuid
 import time
 import random
-import subprocess
 import requests
 import glob as _glob
 
@@ -34,8 +35,6 @@ BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_ID = CONFIG["name"]
 BOTS_DIR = os.path.dirname(BOT_DIR)
 LOCKS_DIR = os.path.join(os.path.dirname(BOTS_DIR), ".locks")
-
-_BWRAP_AVAILABLE = subprocess.run(["which", "bwrap"], capture_output=True).returncode == 0
 
 STATE_PATH = os.path.join(BOT_DIR, "state.json")
 STATUS_PATH = os.path.join(BOT_DIR, "status.json")
@@ -54,6 +53,7 @@ AGENT_MAX_TOKENS = 50000
 AGENT_COMPACTION_THRESHOLD = 70
 AGENT_REQUEST_TIMEOUT_MS = 300000
 GOSSIP_SECRET = ""
+LOG_VERBOSE = False
 TICK_INTERVAL = 30
 STALE_THRESHOLD_SEC = 120
 SCRIPT_TIMEOUT = 30
@@ -68,7 +68,7 @@ SHELL_ALLOWLIST = []
 AVAILABLE_MODELS = []
 # --- END MODELS ---
 
-GOSSIP_MSG = gossip.MSG_USER    # 128 - all custom payloads dispatched by payload["type"]
+GOSSIP_MSG = gossip.MSG_USER
 
 
 # --- Helpers ---
@@ -93,7 +93,6 @@ def _log_error(msg):
         pass
 
 
-# Per-tick activity buffer - flushed to activity.log at tick end
 _activity_buffer = []
 
 
@@ -217,7 +216,6 @@ def _lock_model():
     except Exception:
         return
 
-    # Ticket name: zero-padded ms timestamp + BOT_ID for stable sort and tiebreaking
     ticket = str(int(time.time() * 1000)).zfill(16) + "_" + BOT_ID + ".wait"
     ticket_file = os.path.join(queue_dir, ticket)
     os.write_file(ticket_file, str(int(time.time())))
@@ -249,7 +247,6 @@ def _lock_model():
             try:
                 pos = entries.index(ticket)
             except ValueError:
-                # Ticket was removed (e.g. stale cleanup race) — re-register
                 os.write_file(ticket_file, str(int(time.time())))
                 continue
             if pos < limit:
@@ -371,20 +368,97 @@ def _bump_fitness(key, delta=1):
     _save_state(state)
 
 
-def _detect_local_ip():
-    try:
-        result = subprocess.run(
-            ["hostname", "-I"],
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout:
-            ip = result.stdout.strip().split()[0]
-            if ip and ip != "0.0.0.0":
-                return ip
-    except Exception:
-        pass
-    return "0.0.0.0"
+FILE_DESC_PATH = os.path.join(BOT_DIR, ".file_descriptions.json")
+
+
+def _load_file_descriptions():
+    if os.path.exists(FILE_DESC_PATH):
+        try:
+            return json.loads(os.read_file(FILE_DESC_PATH))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_file_descriptions(descs):
+    tmp = FILE_DESC_PATH + ".tmp"
+    os.write_file(tmp, json.dumps(descs))
+    os.rename(tmp, FILE_DESC_PATH)
+
+
+def _set_file_description(path, desc):
+    descs = _load_file_descriptions()
+    descs[path] = desc[:200]
+    _save_file_descriptions(descs)
+
+
+def _remove_file_description(path):
+    descs = _load_file_descriptions()
+    if path in descs:
+        del descs[path]
+        _save_file_descriptions(descs)
+
+
+def _human_size(n):
+    if n < 1024:
+        return str(n) + "b"
+    if n < 1024 * 1024:
+        return str(int(n / 1024)) + "kb"
+    return str(int(n / (1024 * 1024))) + "mb"
+
+
+def _human_age(ts):
+    diff = int(time.time()) - int(ts)
+    if diff < 60:
+        return "just now"
+    if diff < 3600:
+        return str(diff // 60) + "m ago"
+    if diff < 86400:
+        return str(diff // 3600) + "h ago"
+    return str(diff // 86400) + "d ago"
+
+
+def _build_file_listing():
+    entities_dir = os.path.join(BOT_DIR, "entities")
+    if not os.path.exists(entities_dir):
+        return ""
+    files = []
+    for f in _glob.glob("**/*", entities_dir):
+        if os.path.isdir(f):
+            continue
+        rel = f.replace(entities_dir + "/", "")
+        if rel.startswith("."):
+            continue
+        try:
+            size = os.path.getsize(f)
+            mtime = os.path.getmtime(f)
+        except Exception:
+            size = 0
+            mtime = 0
+        files.append({"path": rel, "size": size, "mtime": mtime})
+    if not files:
+        return ""
+    files.sort(key=lambda x: x["mtime"], reverse=True)
+    descs = _load_file_descriptions()
+    existing = set(f["path"] for f in files)
+    stale = [p for p in list(descs.keys()) if p not in existing]
+    if stale:
+        for p in stale:
+            del descs[p]
+        _save_file_descriptions(descs)
+    total = len(files)
+    shown = files[:20]
+    lines = ["Files (" + str(total) + "):"]
+    for f in shown:
+        entry = "  " + f["path"] + "  " + _human_size(f["size"]) + "  " + _human_age(f["mtime"])
+        desc = descs.get(f["path"], "")
+        if desc:
+            entry += "  - " + desc
+        lines.append(entry)
+    remaining = total - len(shown)
+    if remaining > 0:
+        lines.append("  ... " + str(remaining) + " more (use list_dir to browse)")
+    return "\n".join(lines) + "\n"
 
 
 # --- Network startup ---
@@ -397,20 +471,8 @@ thinking_enabled = CONFIG.get("thinking", True)
 
 _start_time = int(time.time())
 
-
-# In-memory inbox - gossip handler pushes here, read_messages() drains it
 _inbox = runtime.sync.Queue("inbox-" + BOT_ID, maxsize=200)
 
-# brain_req/resp rendezvous: request_id -> brain string
-_brain_responses = {}
-
-# consensus_req/resp rendezvous: request_id -> {bot_id: answer}
-_consensus_responses = {}
-
-# pending consensus requests to process at tick time (avoids blocking gossip goroutine)
-_consensus_req_queue = runtime.sync.Queue("consensus-req-" + BOT_ID, maxsize=50)
-
-# Use a stable port: persisted in state so restarts reuse the same address
 _state_init = _load_state()
 if not _state_init.get("_gossip_port"):
     _state_init["_gossip_port"] = random.randint(20000, 59999)
@@ -419,9 +481,10 @@ _gossip_port = _state_init["_gossip_port"]
 
 cluster = gossip.create(bind_addr="0.0.0.0:" + str(_gossip_port))
 cluster.start()
-_gossip_addr = _detect_local_ip() + ":" + str(_gossip_port)
+_gossip_addr = os.environ.get("BOT_IP", "0.0.0.0") + ":" + str(_gossip_port)
 cluster.set_metadata("id", BOT_ID)
 cluster.set_metadata("goal", goal)
+cluster.set_metadata("role", "bot")
 _log("INFO", "started  addr=" + _gossip_addr + "  model=" + model_name)
 
 
@@ -439,7 +502,7 @@ def _on_gossip_msg(msg):
     if GOSSIP_SECRET:
         msg_secret = payload.get("_secret", "")
         if msg_secret != GOSSIP_SECRET:
-            return
+            return None
 
     msg_type = payload.get("type", "message")
     sender_meta = msg.get("sender", {}).get("metadata", {})
@@ -447,7 +510,6 @@ def _on_gossip_msg(msg):
     if not sender_id:
         raw = msg.get("sender", {}).get("id", "")
         sender_id = raw[:16] if raw else "?"
-    sender_node_id = msg.get("sender", {}).get("id", "")
 
     if msg_type == "message":
         content = payload.get("content", "")
@@ -457,47 +519,9 @@ def _on_gossip_msg(msg):
             "ts": int(time.time()),
         })
         _log("INFO", "<- message  from=" + sender_id + "  content=" + _trunc(content, 100))
+        return None
 
-    elif msg_type == "brain_req":
-        req_id = payload.get("request_id", "")
-        if req_id and sender_node_id:
-            _log("INFO", "<- brain_req  from=" + sender_id)
-            _gossip_send(sender_node_id, {
-                "type": "brain_resp",
-                "request_id": req_id,
-                "brain": _read_brain(),
-            })
-            _log("INFO", "-> brain_resp  to=" + sender_id)
-
-    elif msg_type == "brain_resp":
-        req_id = payload.get("request_id", "")
-        if req_id:
-            _brain_responses[req_id] = payload.get("brain", "")
-            _log("INFO", "<- brain_resp  from=" + sender_id)
-
-    elif msg_type == "consensus_req":
-        req_id = payload.get("request_id", "")
-        question = payload.get("question", "")
-        if req_id and sender_node_id and question:
-            _log("INFO", "<- consensus_req  from=" + sender_id + "  q=" + _trunc(question, 80))
-            _consensus_req_queue.put({
-                "req_id": req_id,
-                "question": question,
-                "sender_node_id": sender_node_id,
-                "sender_id": sender_id,
-            })
-
-    elif msg_type == "consensus_resp":
-        req_id = payload.get("request_id", "")
-        answer = payload.get("answer", "")
-        from_id = payload.get("from", "")
-        if req_id and from_id:
-            if req_id not in _consensus_responses:
-                _consensus_responses[req_id] = {}
-            _consensus_responses[req_id][from_id] = answer
-            _log("INFO", "<- consensus_resp  from=" + from_id + "  answer=" + _trunc(answer, 80))
-
-    elif msg_type == "task_complete":
+    if msg_type == "task_complete":
         task_id = payload.get("task_id", "")
         result_text = payload.get("result", "")
         from_bot = payload.get("from", sender_id)
@@ -509,16 +533,42 @@ def _on_gossip_msg(msg):
             "ts": int(time.time()),
         })
         _log("INFO", "<- task_complete  from=" + from_bot + "  task_id=" + task_id[:40] + "  result=" + _trunc(result_text, 60))
+        return None
 
-    elif msg_type == "stop":
+    if msg_type == "stop":
         _log("WARN", "<- stop  from=" + sender_id)
         _atomic_write_json(STATUS_PATH, _build_status("stopping"))
+        return None
+
+    if msg_type == "brain_req":
+        _log("INFO", "<- brain_req  from=" + sender_id)
+        return {"brain": _read_brain()}
+
+    if msg_type == "consensus_req":
+        question = payload.get("question", "")
+        if not question:
+            return {"answer": "", "from": BOT_ID}
+        _log("INFO", "<- consensus_req  from=" + sender_id + "  q=" + _trunc(question, 80))
+        try:
+            answer = client.ask(model_name, "/no_think\n" + question, system_prompt="Answer briefly and concisely in one sentence.", max_tokens=256)
+        except Exception as e:
+            answer = "Error: " + str(e)
+        try:
+            mem.remember("Consensus from " + sender_id + ": " + question + " -> " + answer)
+        except Exception:
+            pass
+        _bump_fitness("consensus_answered")
+        _log("INFO", "-> consensus_resp  to=" + sender_id + "  answer=" + _trunc(answer, 80))
+        return {"answer": answer, "from": BOT_ID}
+
+    return None
 
 
-cluster.handle(GOSSIP_MSG, _on_gossip_msg)
+cluster.handle_with_reply(GOSSIP_MSG, _on_gossip_msg)
+
+swarm = cluster.create_node_group(criteria={"role": "bot"})
 cluster.set_metadata("gossip_addr", _gossip_addr)
 
-# Join cluster: seeds first, then multicast discovery
 _joined = False
 if seed_addrs:
     try:
@@ -541,7 +591,6 @@ if not _joined:
     except Exception as e:
         _log_error("Multicast discovery failed: " + str(e))
 
-# Announce presence so future bots on the subnet can find us
 try:
     mg = mc.join(MULTICAST_ADDR, MULTICAST_PORT)
     mg.send({"type": "announce", "gossip_addr": _gossip_addr, "id": BOT_ID})
@@ -554,10 +603,12 @@ client = ai.Client(base_url, api_key=api_key)
 db = kv.open(os.path.join(BOT_DIR, "memory.db"))
 mem = memory.new(db, ai_client=client, model=model_name)
 
-_migrate_state()
+election = cluster.create_leader_election(quorum_percentage=51, metadata_criteria={"role": "bot"})
+election.on_event("became_leader", lambda e, n: _log("INFO", "became swarm leader"))
+election.on_event("stepped_down", lambda e, n: _log("INFO", "stepped down as swarm leader"))
+election.start()
 
-if os.environ.get("BOT_SHELL_SANDBOX", "true").lower() != "false" and not _BWRAP_AVAILABLE:
-    _log("WARN", "bwrap not found — shell tool running unsandboxed. Install bwrap or set BOT_SHELL_SANDBOX=false to silence this.")
+_migrate_state()
 
 initial_brain = CONFIG.get("brain", "")
 if initial_brain and not os.path.exists(BRAIN_PATH):
@@ -576,6 +627,7 @@ def _build_status(status="running"):
         "started_at": _start_time,
         "last_tick_ts": int(time.time()),
         "fitness": state.get("fitness", {}),
+        "is_leader": election.is_leader(),
     }
 
 
@@ -600,6 +652,7 @@ def _read_file(args):
 def _write_file(args):
     path = args["path"]
     content = args["content"]
+    desc = args.get("description", "")
     if path == "brain.md":
         return _evolve_brain({"content": content})
     real_path = _safe_path(BOT_DIR, path)
@@ -609,6 +662,8 @@ def _write_file(args):
     if dir_name and not os.path.exists(dir_name):
         os.makedirs(dir_name)
     os.write_file(real_path, content)
+    if desc:
+        _set_file_description(path, desc[:200])
     return "Written to " + path
 
 
@@ -622,6 +677,7 @@ def _delete_file(args):
     if not os.path.exists(real_path):
         return "File not found: " + path
     os.remove(real_path)
+    _remove_file_description(path)
     return "Deleted: " + path
 
 
@@ -658,74 +714,34 @@ def _read_file_range(args):
     return "Lines " + str(s + 1) + "-" + str(min(e, total)) + " of " + str(total) + ":\n" + "\n".join(chunk)
 
 
-_SHELL_BLOCKED = ("curl", "wget")
-
-
-def _build_bwrap_cmd(command, cwd):
-    if os.environ.get("BOT_SHELL_SANDBOX", "true").lower() == "false":
-        return None
-    if not _BWRAP_AVAILABLE:
-        return None
-
-    try:
-        rel = os.path.relpath(cwd, BOT_DIR)
-        inner_cwd = "/" if rel.startswith("..") else ("/" + rel).rstrip("/") or "/"
-    except Exception:
-        inner_cwd = "/"
-
-    cmd = ["bwrap", "--chdir", inner_cwd, "--bind", BOT_DIR, "/"]
-
-    for sysdir in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/etc", "/tmp"):
-        if not os.path.exists(sysdir):
-            continue
-        try:
-            rlink = subprocess.run(["readlink", sysdir], capture_output=True, timeout=5)
-            if rlink.returncode == 0:
-                cmd += ["--symlink", rlink.stdout.strip(), sysdir]
-            elif sysdir == "/tmp":
-                cmd += ["--bind", sysdir, sysdir]
-            else:
-                cmd += ["--ro-bind", sysdir, sysdir]
-        except Exception:
-            cmd += ["--ro-bind", sysdir, sysdir]
-
-    cmd += ["--proc", "/proc", "--dev", "/dev"]
-
-    for mount in [m.strip() for m in os.environ.get("BOT_SHELL_MOUNTS", "").split(",") if m.strip()]:
-        parts = mount.split(":", 2)
-        if len(parts) == 3:
-            mode, host, container = parts[0], parts[1], parts[2]
-            if os.path.exists(host):
-                cmd += ["--ro-bind" if mode == "ro" else "--bind", host, container]
-
-    cmd += ["--", "bash", "-c", command]
-    return cmd
+def _find_watchdog():
+    for n in cluster.alive_nodes():
+        if n.get("metadata", {}).get("role") == "watchdog":
+            return n
+    return None
 
 
 def _shell(args):
     command = args["command"]
-    stripped = command.strip().lstrip("/ \t")
-    first_word = stripped.split()[0].split("/")[-1] if stripped.split() else ""
-    if first_word in _SHELL_BLOCKED:
-        return "Error: " + first_word + " is not allowed in shell. Use the http_request tool instead."
-    if SHELL_ALLOWLIST and first_word not in SHELL_ALLOWLIST:
-        return "Error: " + first_word + " is not in the shell allowlist (" + ", ".join(SHELL_ALLOWLIST) + ")."
     timeout = int(args.get("timeout", SCRIPT_TIMEOUT))
-    cwd = BOT_DIR
-    if args.get("cwd"):
-        cwd = _safe_path(BOT_DIR, args["cwd"]) or BOT_DIR
-    bwrap_cmd = _build_bwrap_cmd(command, cwd)
+    cwd = args.get("cwd", "")
+    watchdog = _find_watchdog()
+    if watchdog is None:
+        return "Error: command proxy not available (watchdog not connected to swarm)"
+    req_payload = {
+        "type": "shell_req",
+        "command": command,
+        "timeout": timeout,
+        "cwd": cwd,
+        "bot_id": BOT_ID,
+    }
+    if GOSSIP_SECRET:
+        req_payload["_secret"] = GOSSIP_SECRET
     try:
-        if bwrap_cmd:
-            result = subprocess.run(bwrap_cmd, capture_output=True, timeout=timeout)
-        else:
-            result = subprocess.run(command, shell=True, capture_output=True, timeout=timeout, cwd=cwd)
-        output = {"exit_code": result.returncode}
-        if result.stdout:
-            output["stdout"] = str(result.stdout)[:50000]
-        if result.stderr:
-            output["stderr"] = str(result.stderr)[:10000]
-        return json.dumps(output)
+        resp = cluster.send_request(watchdog["id"], GOSSIP_MSG, req_payload)
+        if resp is None:
+            return "Error: no response from command proxy"
+        return json.dumps(resp)
     except Exception as e:
         return "Error: " + str(e)
 
@@ -739,29 +755,38 @@ def _search(args):
     if real_path is None or not os.path.exists(real_path):
         return "Path not found: " + rel_path
     try:
-        cmd = ["rg", "--line-number", "--no-heading", "--color=never"]
-        if ignore_case:
-            cmd.append("-i")
-        if glob_pat:
-            cmd.extend(["-g", glob_pat])
-        cmd.extend([pattern, real_path])
-        result = subprocess.run(cmd, capture_output=True, timeout=30)
-        if result.returncode == 2:
-            raise Exception("rg error")
-        out = str(result.stdout).strip() if result.stdout else "(no matches)"
-        return out.replace(BOT_DIR + "/", "")[:20000]
-    except Exception:
-        pass
+        out = greplib.search(pattern, real_path, ignore_case=ignore_case, file_pattern=glob_pat)
+        if not out:
+            return "(no matches)"
+        return str(out).replace(BOT_DIR + "/", "")[:20000]
+    except Exception as e:
+        return "Error: " + str(e)
+
+
+def _replace_in_file(args):
+    path = args["path"]
+    old = args["old"]
+    new = args["new"]
+    replace_all = args.get("all", False)
+    if path == "brain.md":
+        brain = _read_brain()
+        if replace_all:
+            updated = brain.replace(old, new)
+        else:
+            updated = brain.replace(old, new, 1)
+        if updated == brain:
+            return "No changes: old text not found in brain.md"
+        return _evolve_brain({"content": updated})
+    real_path = _safe_path(BOT_DIR, path)
+    if real_path is None:
+        return "Invalid path."
+    if not os.path.exists(real_path):
+        return "File not found: " + path
     try:
-        cmd = ["grep", "-rn", "--color=never"]
-        if ignore_case:
-            cmd.append("-i")
-        if glob_pat:
-            cmd.extend(["--include=" + glob_pat])
-        cmd.extend([pattern, real_path])
-        result = subprocess.run(cmd, capture_output=True, timeout=30)
-        out = str(result.stdout).strip() if result.stdout else "(no matches)"
-        return out.replace(BOT_DIR + "/", "")[:20000]
+        count = sedlib.replace(real_path, old, new, all=replace_all)
+        if count == 0:
+            return "No changes: old text not found."
+        return "Replaced " + str(count) + " occurrence(s) in " + path
     except Exception as e:
         return "Error: " + str(e)
 
@@ -816,7 +841,7 @@ def _send_message(args):
     recipient = args["recipient"]
     content = args["content"]
     target_node = None
-    for n in cluster.alive_nodes():
+    for n in swarm.nodes():
         if n.get("metadata", {}).get("id") == recipient:
             target_node = n
             break
@@ -837,7 +862,7 @@ def _complete_task(args):
     task_id = args.get("task_id", "")
     result_text = args["result"]
     target_node = None
-    for n in cluster.alive_nodes():
+    for n in swarm.nodes():
         if n.get("metadata", {}).get("id") == parent_id:
             target_node = n
             break
@@ -863,7 +888,7 @@ def _read_messages(args):
 
 def _list_bots(args):
     result = []
-    for n in cluster.alive_nodes():
+    for n in swarm.nodes():
         meta = n.get("metadata", {})
         result.append({
             "id": meta.get("id", n["id"][:16]),
@@ -926,30 +951,25 @@ def _spawn_hybrid(args):
     new_goal = args["goal"]
 
     target_node = None
-    for n in cluster.alive_nodes():
+    for n in swarm.nodes():
         if n.get("metadata", {}).get("id") == other_id:
             target_node = n
             break
     if target_node is None:
         return "Bot not found: " + other_id
 
-    req_id = str(uuid.uuid4())
-    _gossip_send(target_node["id"], {
-        "type": "brain_req",
-        "request_id": req_id,
-    })
     _log("INFO", "-> brain_req  to=" + other_id)
-
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        if req_id in _brain_responses:
-            break
-        time.sleep(0.2)
-
-    other_brain = _brain_responses.pop(req_id, None)
-    if other_brain is None:
+    req_payload = {"type": "brain_req"}
+    if GOSSIP_SECRET:
+        req_payload["_secret"] = GOSSIP_SECRET
+    try:
+        resp = cluster.send_request(target_node["id"], GOSSIP_MSG, req_payload)
+    except Exception:
+        resp = None
+    if resp is None:
         return "No brain response from " + other_id + " within 10s."
 
+    other_brain = resp.get("brain", "")
     own_brain = _read_brain()
     merged = "# Hybrid brain: " + BOT_ID + " x " + other_id + "\n\n"
     merged += "## From " + BOT_ID + ":\n" + own_brain + "\n\n"
@@ -960,13 +980,17 @@ def _spawn_hybrid(args):
 
 def _evolve_brain(args):
     content = args["content"]
+    reason = args.get("reason", "")
     if len(content) > MAX_BRAIN_SIZE:
         return "Brain too large (max " + str(MAX_BRAIN_SIZE) + " chars)."
     old_brain = _read_brain()
     if old_brain == content:
         return "Brain unchanged."
+    old_lines = len(old_brain.split("\n"))
+    new_lines = len(content.split("\n"))
+    _log_activity("       diff: " + str(old_lines) + " -> " + str(new_lines) + " lines")
     history = _read_brain_history()
-    history.append({"ts": int(time.time()), "snapshot": _trunc(old_brain, 500)})
+    history.append({"ts": int(time.time()), "snapshot": _trunc(old_brain, 500), "reason": _trunc(reason, 200)})
     history = history[-MAX_BRAIN_HISTORY:]
     tmp = BRAIN_PATH + ".tmp"
     os.write_file(tmp, content)
@@ -1053,8 +1077,8 @@ def _ask_consensus(args):
     if n < 1 or n % 2 == 0:
         return "n must be a positive odd number"
 
-    alive = [node for node in cluster.alive_nodes()
-             if node.get("metadata", {}).get("id") != BOT_ID]
+    members = swarm.nodes()
+    alive = [m for m in members if m.get("metadata", {}).get("id") != BOT_ID]
     if len(alive) < n:
         return "Not enough peers (" + str(len(alive)) + " alive, need " + str(n) + ")"
 
@@ -1062,24 +1086,27 @@ def _ask_consensus(args):
     random.shuffle(targets)
     targets = targets[:n]
 
-    req_id = str(uuid.uuid4())
     target_ids = [t.get("metadata", {}).get("id", t["id"][:8]) for t in targets]
     _log("INFO", "-> consensus_req  to=" + ", ".join(target_ids) + "  q=" + _trunc(question, 80))
+
+    req_payload = {
+        "type": "consensus_req",
+        "question": question,
+        "from": BOT_ID,
+    }
+    if GOSSIP_SECRET:
+        req_payload["_secret"] = GOSSIP_SECRET
+
+    responses = {}
     for target in targets:
-        _gossip_send(target["id"], {
-            "type": "consensus_req",
-            "request_id": req_id,
-            "question": question,
-            "from": BOT_ID,
-        })
+        try:
+            resp = cluster.send_request(target["id"], GOSSIP_MSG, req_payload)
+            if resp:
+                from_id = resp.get("from", target.get("metadata", {}).get("id", target["id"][:8]))
+                responses[from_id] = resp.get("answer", "")
+        except Exception:
+            pass
 
-    deadline = time.time() + 15
-    while time.time() < deadline:
-        if req_id in _consensus_responses and len(_consensus_responses[req_id]) >= n:
-            break
-        time.sleep(0.5)
-
-    responses = _consensus_responses.pop(req_id, {})
     if not responses:
         return "No responses received."
 
@@ -1103,14 +1130,47 @@ def _ask_consensus(args):
     })
 
 
+def _memory_remember(args):
+    content = args["content"]
+    mtype = args.get("type", "note")
+    importance = float(args.get("importance", 0.5))
+    try:
+        result = mem.remember(content, type=mtype, importance=importance)
+        return json.dumps(result)
+    except Exception as e:
+        return "Error: " + str(e)
+
+
+def _memory_recall(args):
+    query = args.get("query", "")
+    limit = int(args.get("limit", 10))
+    mtype = args.get("type", "")
+    try:
+        results = mem.recall(query=query, limit=limit, type=mtype)
+        _log_activity("       results: " + str(len(results)) + " memories")
+        return json.dumps(results)
+    except Exception as e:
+        return "Error: " + str(e)
+
+
+def _memory_forget(args):
+    mid = args["id"]
+    try:
+        mem.forget(mid)
+        return "Forgotten: " + mid
+    except Exception as e:
+        return "Error: " + str(e)
+
+
 tools.add("read_file", "Read a file in your directory", {"path": "string"}, _wrap_tool("read_file", _read_file))
 tools.add("read_file_range", "Read a line range from a file (1-indexed)", {"path": "string", "start": "int", "end": "int?"}, _wrap_tool("read_file_range", _read_file_range))
-tools.add("write_file", "Write a file to your directory", {"path": "string", "content": "string"}, _wrap_tool("write_file", _write_file))
+tools.add("write_file", "Write a file to your directory. Include a brief description of what the file contains.", {"path": "string", "content": "string", "description": "string?"}, _wrap_tool("write_file", _write_file))
 tools.add("append_file", "Append content to an existing file (creates it if absent)", {"path": "string", "content": "string"}, _wrap_tool("append_file", _append_file))
 tools.add("delete_file", "Delete a file from your directory", {"path": "string"}, _wrap_tool("delete_file", _delete_file))
+tools.add("replace_in_file", "Replace text in a file (more efficient than read+write for small edits)", {"path": "string", "old": "string", "new": "string", "all": "bool?"}, _wrap_tool("replace_in_file", _replace_in_file))
 tools.add("list_dir", "List files in a directory", {"path": "string?"}, _wrap_tool("list_dir", _list_dir))
-tools.add("search", "Search file contents with a regex pattern (ripgrep, falls back to grep)", {"pattern": "string", "path": "string?", "glob": "string?", "ignore_case": "bool?"}, _wrap_tool("search", _search))
-tools.add("shell", "Run a shell command and return stdout/stderr", {"command": "string", "cwd": "string?", "timeout": "int?"}, _wrap_tool("shell", _shell))
+tools.add("search", "Search file contents with a regex pattern", {"pattern": "string", "path": "string?", "glob": "string?", "ignore_case": "bool?"}, _wrap_tool("search", _search))
+tools.add("shell", "Run a shell command via the command proxy (sandboxed, no network tools)", {"command": "string", "cwd": "string?", "timeout": "int?"}, _wrap_tool("shell", _shell))
 tools.add("run_script", "Run a scriptling script", {"path": "string", "args": "string?"}, _wrap_tool("run_script", _run_script))
 tools.add("send_message", "Send a direct message to a bot by ID", {"recipient": "string", "content": "string"}, _wrap_tool("send_message", _send_message))
 tools.add("complete_task", "Report task completion to your parent bot", {"parent_bot": "string", "result": "string", "task_id": "string?"}, _wrap_tool("complete_task", _complete_task))
@@ -1118,11 +1178,14 @@ tools.add("read_messages", "Read your unread messages", {}, _wrap_tool("read_mes
 tools.add("list_bots", "List all bots visible in the swarm", {}, _wrap_tool("list_bots", _list_bots))
 tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?", "task_id": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
 tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
-tools.add("evolve_brain", "Rewrite your brain to adapt your behavior", {"content": "string"}, _wrap_tool("evolve_brain", _evolve_brain))
+tools.add("evolve_brain", "Rewrite your brain to adapt your behavior. Include a reason explaining what changed and why.", {"content": "string", "reason": "string?"}, _wrap_tool("evolve_brain", _evolve_brain))
 tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "bool?"}, _wrap_tool("query_model", _query_model))
 tools.add("list_models", "List available models with descriptions, costs, and strengths", {}, _wrap_tool("list_models", _list_models))
 tools.add("http_request", "HTTP request (GET/POST/PUT/DELETE/PATCH) with optional body and headers", {"url": "string", "method": "string?", "body": "string?", "content_type": "string?", "headers": "string?", "timeout": "int?"}, _wrap_tool("http_request", _http_request))
 tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "int?"}, _wrap_tool("ask_consensus", _ask_consensus))
+tools.add("memory_remember", "Store a fact, lesson, or observation in persistent memory. Include a reason explaining why this is worth remembering.", {"content": "string", "type": "string?", "importance": "float?", "reason": "string?"}, _wrap_tool("memory_remember", _memory_remember))
+tools.add("memory_recall", "Search memories by keyword and similarity, or call with no args to load your preferences and top memories", {"query": "string?", "limit": "int?", "type": "string?"}, _wrap_tool("memory_recall", _memory_recall))
+tools.add("memory_forget", "Remove a memory by ID", {"id": "string"}, _wrap_tool("memory_forget", _memory_forget))
 
 
 # --- SYSTEM PROMPT ---
@@ -1132,9 +1195,17 @@ def _build_system_prompt():
     prompt = "You are " + BOT_ID + ", an autonomous agent.\n"
     if brain:
         prompt += "## Your Brain\n" + brain + "\n\n"
+    try:
+        prefs = mem.recall(type="preference", limit=-1)
+        if prefs:
+            prompt += "## Your Preferences\n"
+            for p in prefs:
+                prompt += "- " + p["content"] + "\n"
+            prompt += "\n"
+    except Exception:
+        pass
     return prompt
 # --- END SYSTEM PROMPT ---
-
 
 
 bot_agent = agent.Agent(
@@ -1142,7 +1213,6 @@ bot_agent = agent.Agent(
     tools=tools,
     system_prompt=_build_system_prompt(),
     model=model_name,
-    memory=mem,
     max_tokens=AGENT_MAX_TOKENS,
     compaction_threshold=AGENT_COMPACTION_THRESHOLD,
 )
@@ -1171,7 +1241,6 @@ while True:
         del _activity_buffer[:]
         _log("INFO", "tick " + str(_tick_count) + " start  swarm=" + str(cluster.num_alive()) + "  unread=" + str(_inbox.size()))
 
-        # Periodic multicast announce so new bots on the subnet can find us
         if _tick_count % MULTICAST_ANNOUNCE_EVERY == 0:
             try:
                 mg = mc.join(MULTICAST_ADDR, MULTICAST_PORT)
@@ -1190,12 +1259,20 @@ while True:
         _log_activity("  fitness=" + json.dumps(fitness))
         if brain_preview:
             _log_activity("  brain: " + brain_preview + ("..." if len(brain) > 80 else ""))
+        if election.is_leader():
+            _log_activity("  role: LEADER")
         _log_activity("-" * 72)
 
         tick_msg = "Tick " + str(_tick_count) + ". Model: " + model_name + ". "
         tick_msg += "Entities: " + str(entity_count) + ", "
         tick_msg += "Unread: " + str(unread_count) + ", Swarm: " + str(cluster.num_alive()) + ".\n"
         tick_msg += "Fitness: " + json.dumps(fitness) + "\n"
+        if election.is_leader():
+            tick_msg += "You are the swarm leader.\n"
+
+        file_listing = _build_file_listing()
+        if file_listing:
+            tick_msg += file_listing
 
         last_activity = state.get("_last_activity", "")
         if last_activity:
@@ -1206,30 +1283,16 @@ while True:
 
         tick_msg += "What is your next action toward your goal?"
 
-        # Drain pending consensus requests (deferred from gossip handler to avoid blocking)
         _lock_model()
         try:
-            while _consensus_req_queue.size() > 0:
-                req = _consensus_req_queue.get()
-                try:
-                    answer = client.ask(model_name, "/no_think\n" + req["question"], system_prompt="Answer briefly and concisely in one sentence.", max_tokens=256)
-                except Exception as e:
-                    answer = "Error: " + str(e)
-                _gossip_send(req["sender_node_id"], {
-                    "type": "consensus_resp",
-                    "request_id": req["req_id"],
-                    "answer": answer,
-                    "from": BOT_ID,
-                })
-                _log("INFO", "-> consensus_resp  to=" + req["sender_id"] + "  answer=" + _trunc(answer, 80))
-                try:
-                    mem.remember("Consensus from " + req["sender_id"] + ": " + req["question"] + " -> " + answer)
-                except Exception:
-                    pass
-                _bump_fitness("consensus_answered")
-
-            bot_agent.system_prompt = _build_system_prompt()
+            sys_prompt = _build_system_prompt()
+            bot_agent.system_prompt = sys_prompt
             trigger_msg = tick_msg if thinking_enabled else "/no_think\n" + tick_msg
+            if LOG_VERBOSE:
+                debug_dir = os.path.join(BOT_DIR, "debug")
+                if not os.path.exists(debug_dir):
+                    os.makedirs(debug_dir)
+                os.write_file(os.path.join(debug_dir, "tick-" + str(_tick_count) + ".md"), "# System Prompt\n\n" + sys_prompt + "\n\n# Tick Message\n\n" + trigger_msg + "\n")
             bot_agent.trigger(trigger_msg, max_iterations=TICK_MAX_ITERATIONS)
         finally:
             _unlock_model()
