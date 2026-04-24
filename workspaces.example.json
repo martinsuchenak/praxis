@@ -1,0 +1,11 @@
+{
+  "example-project": {
+    "path": "/home/user/projects/example",
+    "gossip_secret": "example-workspace-secret",
+    "default_scope": "isolated"
+  },
+  "another-project": {
+    "path": "/home/user/projects/another",
+    "default_scope": "isolated"
+  }
+}

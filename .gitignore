@@ -3,3 +3,4 @@ shared/*
 .env
 models.json
 .locks/*
+workspaces.json

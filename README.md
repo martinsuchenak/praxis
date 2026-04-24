@@ -74,6 +74,44 @@ BOT_SHELL_MOUNTS=             # optional: extra mounts inside the sandbox, forma
 
 API keys are never baked into bot source files — bots read them from the environment at runtime.
 
+### Workspaces (optional)
+
+Create a `workspaces.json` file (see `workspaces.example.json`) to give bots access to external project directories:
+
+```json
+{
+  "myapp": {
+    "path": "/home/user/projects/myapp",
+    "gossip_secret": "myapp-workspace-secret",
+    "default_scope": "isolated"
+  },
+  "website": {
+    "path": "/home/user/projects/website",
+    "default_scope": "isolated"
+  }
+}
+```
+
+Each workspace can optionally define:
+- `gossip_secret` — a secret used for message authentication by bots in this workspace. Bots with different secrets drop each other's messages. If omitted, bots use the global `BOT_GOSSIP_SECRET`.
+- `default_scope` — the communication scope for bots spawned into this workspace (default: `isolated`). Can be overridden per-bot at spawn time.
+
+Spawn a bot with a workspace and its `read_file`/`search`/`shell` tools can access the project directly:
+
+```bash
+scriptling bin/control.py spawn DevBot "Refactor auth" workspace=myapp
+
+# Gateway bot that can talk to two workspaces:
+scriptling bin/control.py spawn Coordinator "Coordinate frontend and backend" \
+  workspace=myapp scope=gateway allowed_workspaces=website
+```
+
+The workspace name is resolved from `workspaces.json` to a host path by the operator at spawn time. The path is stored in the bot's `status.json` (never in its source code or CONFIG). Bots read it at startup and can access workspace files via their own tools (`read_file`, `write_file`, `shell`, etc.) — the path is added to scriptling's `--allowed-paths` and the bwrap sandbox mounts it at the real path.
+
+Children automatically inherit the workspace: when a bot spawns a child, the watchdog detects the parent-child relationship and copies the workspace path to the child. Bots cannot change their workspace or spawn into a different one.
+
+Without a workspace, bots are fully isolated in their own directory with no external mounts.
+
 ### Model Catalog (optional)
 
 Create a `models.json` file (see `models.example.json` for the format) to give bots awareness of other models they can use:
@@ -119,7 +157,7 @@ scriptling bin/control.py spawn Scout "Scout the environment" \
 scriptling bin/control.py spawn Worker "Process data quickly" thinking=false
 ```
 
-Available options: `model=`, `brain=`, `seeds=`, `thinking=false`
+Available options: `model=`, `brain=`, `seeds=`, `thinking=false`, `workspace=`, `scope=open|isolated|gateway|family`, `allowed_workspaces=ws1,ws2`
 
 Then start it:
 
@@ -212,6 +250,8 @@ scriptling bin/control.py watchdog           # runs until Ctrl+C
 
 The watchdog joins the gossip cluster as `role=watchdog`. Bots send `shell_req` gossip requests to the watchdog, which enforces an allowlist and wraps commands in a `bwrap` sandbox. If `bwrap` is not installed, commands run unsandboxed (with a log warning).
 
+When a bot has a workspace configured, the watchdog adds the workspace path to `--allowed-paths` when starting it, and mounts it at the real path inside the bwrap sandbox. Bots access workspace files using their own tools (`read_file`, `write_file`, `search`) and `shell` commands with the same path.
+
 ## Networking
 
 ### Discovery
@@ -241,6 +281,28 @@ All inter-bot messages are sent directly via `gossip.send_to()`. Request/respons
 | `task_complete` | one-way | Child bot reporting task completion to parent |
 | `stop` | one-way | Remote graceful stop signal |
 | `shell_req` | request/reply | Bot -> watchdog command proxy — reply contains `{"exit_code": ..., "stdout": ..., "stderr": ...}` |
+| `relay_req` | request/reply | Bot -> watchdog cross-workspace relay — reply contains `{"status": "relayed", ...}` or `{"error": ...}` |
+| `relayed_message` | one-way | Watchdog -> bot relayed cross-workspace message — contains `from`, `content` |
+
+### Communication Scope
+
+Bots have a **scope** that controls which peers they can see and message. Scope is set at spawn time (workspace default + optional per-bot override). The four modes:
+
+| Scope | Visibility | Cross-workspace |
+|---|---|---|
+| `open` | All bots on the gossip network | Direct messaging |
+| `isolated` | Same-workspace bots only | None |
+| `gateway` | Same-workspace + allowed workspaces | Via watchdog relay |
+| `family` | Parent and children only | None |
+
+**How it works:**
+
+- Each bot publishes `scope` and `workspace` as gossip metadata.
+- `list_bots` and `send_message` filter peers by scope rules.
+- Gateway bots can send messages to bots in `allowed_workspaces` — the watchdog relays the message on their behalf. The target receives it as a `relayed_message`.
+- Incoming consensus requests and relayed messages always reach a bot regardless of scope.
+- Per-workspace `gossip_secret` provides application-level message filtering — bots drop messages with the wrong secret.
+- Scope is stored in `status.json` (read once at startup into a module variable). Bots cannot change their scope at runtime.
 
 ### Node Groups and Leader Election
 
@@ -315,10 +377,10 @@ Every bot knows its own model (shown in each tick message). If a `models.json` c
 |---|---|---|
 | `read_file` | path | Read a file (`brain.md` reads the brain) |
 | `read_file_range` | path, start, end? | Read a line range from a file (1-indexed) |
-| `write_file` | path, content | Write a file (`entities/` also written to disk; `brain.md` calls evolve_brain) |
+| `write_file` | path, content, description? | Write a file (`entities/` also written to disk; `brain.md` calls evolve_brain) |
 | `append_file` | path, content | Append to a file (creates it if absent) |
 | `delete_file` | path | Delete a file |
-| `replace_in_file` | path, old, new, all? | Replace text in a file (more efficient than read+write for small edits; `brain.md` supported) |
+| `replace_in_file` | path, old, new | Replace text in a file (replaces all occurrences; `brain.md` supported) |
 | `list_dir` | path? | List virtual directory |
 | `search` | pattern, path?, glob?, ignore_case? | Regex search across files (uses scriptling.grep, no subprocess) |
 | `shell` | command, cwd?, timeout? | Run a shell command via the watchdog command proxy (sandboxed with bwrap) |
@@ -357,13 +419,14 @@ Memory tools are manually registered (not via agent auto-registration) so they g
 - **Thinking mode** — controlled per-bot via the `thinking` CONFIG field; implemented by prepending `/no_think` to the LLM message rather than a parameter, since that's what the model router requires.
 - **Memory tool observability** — memory tools are registered manually (not via `agent.Agent(memory=mem)` auto-registration) so they go through `_wrap_tool` for activity logging. The `reason` parameter on `memory_remember` and `evolve_brain` is optional, since smaller models may fail to provide required parameters.
 - **Brain evolution logging** — `evolve_brain` logs the line-count diff (`old -> new lines`) and stores an optional `reason` in brain history for traceability.
-- **File awareness** — the tick message includes a compact directory tree of `entities/` showing file counts and sample filenames per subfolder, so the bot can see what it has created without listing manually.
+- **File awareness** — a flat `.index.md` in `entities/` lists all knowledge files with descriptions, sizes, and ages. Rebuilt on every write/delete/replace and shown in the tick message so the bot sees its knowledge at a glance.
 - **Debug dumps** — when `LOG_VERBOSE=true`, each tick writes `debug/tick-N.md` containing the full system prompt and tick message for offline debugging.
 - **No credentials in source** — API keys and the base URL are never written into bot.py. Bots read `BOT_API_KEY` and `BOT_BASE_URL` from the environment at runtime.
 - **`BOT_IP` env var** — bots cannot detect their own IP (no subprocess), so `control.py` detects the local IP and passes it as `BOT_IP` in the environment. Bots use this for their gossip address.
 - **No subprocess in bot runtime** — bots are spawned with `--disable-lib=subprocess` and cannot spawn processes directly. The `shell` tool proxies commands through the watchdog via gossip request/reply. The `search` tool uses `scriptling.grep` (in-process) instead of spawning `rg`/`grep`. File edits can use `replace_in_file` via `scriptling.sed`.
 - **Layered filesystem sandboxing** — three complementary layers: (1) `scriptling --allowed-paths` restricts the scriptling `os`/`pathlib`/`glob` libraries to the bot's own dir, `bots/`, and `.locks/` — enforced by the runtime, not bypassable via source edits since env vars are read-only; (2) `subprocess` library is disabled entirely — bots cannot spawn processes; (3) `bwrap` sandboxes shell commands on the watchdog — the bot's directory is mounted as `/`, system dirs (`/usr`, `/bin`, `/lib`, `/etc`) are read-only, `/tmp` is writable. Set `BOT_SHELL_SANDBOX=false` to disable. If `bwrap` is not installed a warning is logged and commands run unsandboxed.
-- **Watchdog command proxy** — the watchdog (`control watchdog`) joins the gossip cluster and handles `shell_req` requests from bots. It enforces a shell allowlist (`BOT_SHELL_ALLOWLIST`), blocks `curl`/`wget` (bots should use `http_request` instead), and wraps commands in `bwrap`.
+- **Watchdog command proxy** — the watchdog (`control watchdog`) joins the gossip cluster and handles `shell_req` requests from bots. It enforces a shell allowlist (`BOT_SHELL_ALLOWLIST`), blocks `curl`/`wget` (bots should use `http_request` instead), and wraps commands in `bwrap`. Workspace mounts are resolved per-request from `workspaces.json` using the bot's `status.json`.
+- **Workspaces** — bots working on external projects get a named workspace. The operator provides a name at spawn time; `control.py` resolves it from `workspaces.json` and stores the host path in `status.json` (not in bot source). The path is added to `--allowed-paths` and mounted in bwrap. Bots can read/write workspace files with their own tools. Children inherit the workspace via the watchdog (parent-child tracking). Bots cannot change their workspace or spawn into a different one.
 - **Gossip request/reply** — brain requests and consensus use `gossip.send_request()` / `handle_with_reply()` instead of manual rendezvous queues. The handler runs synchronously in the gossip goroutine — consensus answers are computed inline (blocking the goroutine briefly) but avoid the complexity of deferred queues.
 - **Node groups and leader election** — bots join a `{"role": "bot"}` criteria group so tools iterate only over bot peers (not the watchdog). A leader election with 51% quorum provides a swarm coordinator. Leader status is visible in tick messages and `control list`.
 - **Gossip auth** — optional shared secret via `BOT_GOSSIP_SECRET`. When set, all inter-bot messages include `_secret` in the payload and unauthenticated messages are dropped. Bots on different machines just need the same secret in their `.env`.
@@ -377,3 +440,4 @@ Memory tools are manually registered (not via agent auto-registration) so they g
 - **`http_request`** — single HTTP tool covering GET, POST, PUT, DELETE, PATCH with optional body, `Content-Type`, and extra headers. Returns `http_status` (real HTTP code, not curl exit code).
 - **Per-model concurrency cap** — before each tick's LLM call, bots acquire a slot under `.locks/<model>/`. Each bot writes a timestamped file; slots held longer than the request timeout are automatically treated as stale (handles crashes). `concurrency` in `models.json` sets the limit per model; `BOT_MAX_CONCURRENT` is the fallback. This prevents slow models from being hammered by concurrent requests that all time out.
 - **Tick iteration cap** — `BOT_TICK_MAX_ITERATIONS` limits the number of tool-call rounds per tick (default 5). Useful for slow models where shorter sessions reduce queuing pressure.
+- **Communication scope** — bots have a scope (`open`, `isolated`, `gateway`, `family`) that controls peer visibility and messaging. Set at spawn time from the workspace default with optional per-bot override. Enforced at two layers: (1) per-workspace `gossip_secret` for application-level message filtering, (2) tool-level filtering in `list_bots` and `send_message`. Gateway bots relay cross-workspace messages through the watchdog, which validates `allowed_workspaces` before forwarding. Scope is read from `status.json` into a module variable at startup — bots cannot change it at runtime. Parent-child communication (`complete_task`) is always allowed regardless of scope.

@@ -39,6 +39,33 @@ LOCKS_DIR = os.path.join(os.path.dirname(BOTS_DIR), ".locks")
 STATE_PATH = os.path.join(BOT_DIR, "state.json")
 STATUS_PATH = os.path.join(BOT_DIR, "status.json")
 ERROR_LOG = os.path.join(BOT_DIR, "errors.log")
+
+WORKSPACE_PATH = ""
+WORKSPACE_NAME = ""
+BOT_SCOPE = "open"
+ALLOWED_WORKSPACES = []
+PARENT_ID = ""
+GOSSIP_SECRET_OVERRIDE = ""
+try:
+    _init_status = json.loads(os.read_file(STATUS_PATH))
+    _wp = _init_status.get("workspace_path", "")
+    if _wp and os.path.exists(_wp):
+        WORKSPACE_PATH = _wp
+    WORKSPACE_NAME = _init_status.get("workspace", "")
+    _sc = _init_status.get("scope", "open")
+    if _sc:
+        BOT_SCOPE = _sc
+    _aw = _init_status.get("allowed_workspaces", [])
+    if _aw:
+        ALLOWED_WORKSPACES = _aw
+    _pi = _init_status.get("parent", "")
+    if _pi:
+        PARENT_ID = _pi
+    _gs = _init_status.get("gossip_secret", "")
+    if _gs:
+        GOSSIP_SECRET_OVERRIDE = _gs
+except Exception:
+    pass
 ACTIVITY_LOG = os.path.join(BOT_DIR, "activity.log")
 # --- DEFAULTS ---
 
@@ -334,7 +361,10 @@ def _safe_path(base_dir, rel_path):
     parts = rel_path.replace("\\", "/").split("/")
     if ".." in parts:
         return None
-    if rel_path.replace("\\", "/").startswith("/"):
+    abs_path = rel_path.replace("\\", "/")
+    if WORKSPACE_PATH and abs_path.startswith(WORKSPACE_PATH + "/"):
+        return abs_path
+    if abs_path.startswith("/"):
         return None
     return os.path.join(base_dir, rel_path)
 
@@ -418,7 +448,10 @@ def _human_age(ts):
     return str(diff // 86400) + "d ago"
 
 
-def _build_file_listing():
+INDEX_PATH = os.path.join(BOT_DIR, "entities", ".index.md")
+
+
+def _rebuild_index():
     entities_dir = os.path.join(BOT_DIR, "entities")
     if not os.path.exists(entities_dir):
         return ""
@@ -435,30 +468,32 @@ def _build_file_listing():
         except Exception:
             size = 0
             mtime = 0
-        files.append({"path": rel, "size": size, "mtime": mtime})
+        files.append({"rel": rel, "size": size, "mtime": mtime})
     if not files:
+        if os.path.exists(INDEX_PATH):
+            os.remove(INDEX_PATH)
         return ""
     files.sort(key=lambda x: x["mtime"], reverse=True)
     descs = _load_file_descriptions()
-    existing = set(f["path"] for f in files)
-    stale = [p for p in list(descs.keys()) if p not in existing]
-    if stale:
-        for p in stale:
-            del descs[p]
-        _save_file_descriptions(descs)
-    total = len(files)
-    shown = files[:20]
-    lines = ["Files (" + str(total) + "):"]
-    for f in shown:
-        entry = "  " + f["path"] + "  " + _human_size(f["size"]) + "  " + _human_age(f["mtime"])
-        desc = descs.get(f["path"], "")
+    lines = ["# entities/ (" + str(len(files)) + " files)"]
+    for f in files:
+        line = "- " + f["rel"] + "  " + _human_size(f["size"]) + "  " + _human_age(f["mtime"])
+        desc = descs.get("entities/" + f["rel"], "")
         if desc:
-            entry += "  - " + desc
-        lines.append(entry)
-    remaining = total - len(shown)
-    if remaining > 0:
-        lines.append("  ... " + str(remaining) + " more (use list_dir to browse)")
-    return "\n".join(lines) + "\n"
+            line = line + "  - " + desc
+        lines.append(line)
+    content = "\n".join(lines) + "\n"
+    os.write_file(INDEX_PATH, content)
+    return content
+
+
+def _build_file_listing():
+    if os.path.exists(INDEX_PATH):
+        try:
+            return os.read_file(INDEX_PATH)
+        except Exception:
+            pass
+    return _rebuild_index()
 
 
 # --- Network startup ---
@@ -479,13 +514,21 @@ if not _state_init.get("_gossip_port"):
     _save_state(_state_init)
 _gossip_port = _state_init["_gossip_port"]
 
+if GOSSIP_SECRET_OVERRIDE:
+    GOSSIP_SECRET = GOSSIP_SECRET_OVERRIDE
+
 cluster = gossip.create(bind_addr="0.0.0.0:" + str(_gossip_port))
 cluster.start()
 _gossip_addr = os.environ.get("BOT_IP", "0.0.0.0") + ":" + str(_gossip_port)
 cluster.set_metadata("id", BOT_ID)
 cluster.set_metadata("goal", goal)
 cluster.set_metadata("role", "bot")
-_log("INFO", "started  addr=" + _gossip_addr + "  model=" + model_name)
+cluster.set_metadata("scope", BOT_SCOPE)
+if WORKSPACE_NAME:
+    cluster.set_metadata("workspace", WORKSPACE_NAME)
+if PARENT_ID:
+    cluster.set_metadata("parent_id", PARENT_ID)
+_log("INFO", "started  addr=" + _gossip_addr + "  model=" + model_name + "  scope=" + BOT_SCOPE)
 
 
 def _gossip_send(node_id, payload):
@@ -519,6 +562,18 @@ def _on_gossip_msg(msg):
             "ts": int(time.time()),
         })
         _log("INFO", "<- message  from=" + sender_id + "  content=" + _trunc(content, 100))
+        return None
+
+    if msg_type == "relayed_message":
+        from_bot = payload.get("from", "")
+        content = payload.get("content", "")
+        _inbox.put({
+            "from": from_bot,
+            "content": content,
+            "ts": int(time.time()),
+            "relayed": True,
+        })
+        _log("INFO", "<- relayed_message  from=" + from_bot + "  via watchdog  content=" + _trunc(content, 100))
         return None
 
     if msg_type == "task_complete":
@@ -617,9 +672,31 @@ if initial_brain and not os.path.exists(BRAIN_PATH):
     os.rename(tmp, BRAIN_PATH)
 
 
+def _peer_in_scope(peer_meta):
+    if BOT_SCOPE == "open":
+        return True
+    peer_id = peer_meta.get("id", "")
+    peer_workspace = peer_meta.get("workspace", "")
+    if BOT_SCOPE == "isolated":
+        if not WORKSPACE_NAME:
+            return True
+        return peer_workspace == WORKSPACE_NAME
+    if BOT_SCOPE == "gateway":
+        if peer_workspace == WORKSPACE_NAME:
+            return True
+        return peer_workspace in ALLOWED_WORKSPACES
+    if BOT_SCOPE == "family":
+        if peer_id == PARENT_ID:
+            return True
+        if peer_meta.get("parent_id") == BOT_ID:
+            return True
+        return False
+    return False
+
+
 def _build_status(status="running"):
     state = _load_state()
-    return {
+    s = {
         "id": BOT_ID,
         "goal": goal,
         "status": status,
@@ -629,6 +706,19 @@ def _build_status(status="running"):
         "fitness": state.get("fitness", {}),
         "is_leader": election.is_leader(),
     }
+    if WORKSPACE_PATH:
+        s["workspace_path"] = WORKSPACE_PATH
+    if WORKSPACE_NAME:
+        s["workspace"] = WORKSPACE_NAME
+    if BOT_SCOPE != "open":
+        s["scope"] = BOT_SCOPE
+    if ALLOWED_WORKSPACES:
+        s["allowed_workspaces"] = ALLOWED_WORKSPACES
+    if PARENT_ID:
+        s["parent"] = PARENT_ID
+    if GOSSIP_SECRET_OVERRIDE:
+        s["gossip_secret"] = GOSSIP_SECRET_OVERRIDE
+    return s
 
 
 _atomic_write_json(STATUS_PATH, _build_status())
@@ -664,6 +754,7 @@ def _write_file(args):
     os.write_file(real_path, content)
     if desc:
         _set_file_description(path, desc[:200])
+    _rebuild_index()
     return "Written to " + path
 
 
@@ -678,6 +769,7 @@ def _delete_file(args):
         return "File not found: " + path
     os.remove(real_path)
     _remove_file_description(path)
+    _rebuild_index()
     return "Deleted: " + path
 
 
@@ -767,15 +859,11 @@ def _replace_in_file(args):
     path = args["path"]
     old = args["old"]
     new = args["new"]
-    replace_all = args.get("all", False)
     if path == "brain.md":
         brain = _read_brain()
-        if replace_all:
-            updated = brain.replace(old, new)
-        else:
-            updated = brain.replace(old, new, 1)
-        if updated == brain:
+        if old not in brain:
             return "No changes: old text not found in brain.md"
+        updated = brain.replace(old, new)
         return _evolve_brain({"content": updated})
     real_path = _safe_path(BOT_DIR, path)
     if real_path is None:
@@ -783,10 +871,11 @@ def _replace_in_file(args):
     if not os.path.exists(real_path):
         return "File not found: " + path
     try:
-        count = sedlib.replace(real_path, old, new, all=replace_all)
+        count = sedlib.replace(old, new, real_path)
         if count == 0:
             return "No changes: old text not found."
-        return "Replaced " + str(count) + " occurrence(s) in " + path
+        _rebuild_index()
+        return "Replaced in " + path
     except Exception as e:
         return "Error: " + str(e)
 
@@ -807,6 +896,8 @@ def _list_dir(args):
     entries = []
     try:
         for entry in sorted(os.listdir(real_path)):
+            if entry.startswith("."):
+                continue
             full = os.path.join(real_path, entry)
             entries.append(entry + "/" if os.path.isdir(full) else entry)
     except Exception:
@@ -837,16 +928,50 @@ def _run_script(args):
         return "Error: " + str(e)
 
 
+def _relay_message(recipient, content):
+    watchdog = _find_watchdog()
+    if watchdog is None:
+        return "Error: watchdog not available for cross-workspace relay"
+    req_payload = {
+        "type": "relay_req",
+        "from": BOT_ID,
+        "target_bot": recipient,
+        "content": content,
+    }
+    if GOSSIP_SECRET:
+        req_payload["_secret"] = GOSSIP_SECRET
+    try:
+        resp = cluster.send_request(watchdog["id"], GOSSIP_MSG, req_payload)
+        if resp is None:
+            return "Error: no response from watchdog relay"
+        if resp.get("error"):
+            return "Relay error: " + resp["error"]
+        _log("INFO", "-> relay  to=" + recipient + "  via watchdog  content=" + _trunc(content, 100))
+        _bump_fitness("messages_sent")
+        return "Relayed to " + recipient + " via watchdog"
+    except Exception as e:
+        return "Error: " + str(e)
+
+
 def _send_message(args):
     recipient = args["recipient"]
     content = args["content"]
     target_node = None
+    target_meta = {}
     for n in swarm.nodes():
-        if n.get("metadata", {}).get("id") == recipient:
+        meta = n.get("metadata", {})
+        if meta.get("id") == recipient:
             target_node = n
+            target_meta = meta
             break
     if target_node is None:
+        if BOT_SCOPE == "gateway" and ALLOWED_WORKSPACES:
+            return _relay_message(recipient, content)
         return "Bot not found or offline: " + recipient
+    if not _peer_in_scope(target_meta):
+        if BOT_SCOPE == "gateway" and ALLOWED_WORKSPACES:
+            return _relay_message(recipient, content)
+        return "Bot not in your scope: " + recipient
     _gossip_send(target_node["id"], {
         "type": "message",
         "from": BOT_ID,
@@ -858,9 +983,9 @@ def _send_message(args):
 
 
 def _complete_task(args):
-    parent_id = args["parent_bot"]
-    task_id = args.get("task_id", "")
-    result_text = args["result"]
+    parent_id = args.get("parent_bot") or ""
+    task_id = args.get("task_id") or ""
+    result_text = args.get("result") or ""
     target_node = None
     for n in swarm.nodes():
         if n.get("metadata", {}).get("id") == parent_id:
@@ -890,6 +1015,8 @@ def _list_bots(args):
     result = []
     for n in swarm.nodes():
         meta = n.get("metadata", {})
+        if not _peer_in_scope(meta):
+            continue
         result.append({
             "id": meta.get("id", n["id"][:16]),
             "goal": meta.get("goal", ""),
@@ -917,6 +1044,11 @@ def _spawn_bot(args):
     if os.path.exists(new_dir):
         return "Bot already exists: " + new_name
     os.makedirs(new_dir)
+    child_entities = os.path.join(new_dir, "entities")
+    os.makedirs(child_entities)
+    ref_path = os.path.join(BOT_DIR, "entities", "scriptling-reference.md")
+    if os.path.exists(ref_path):
+        os.write_file(os.path.join(child_entities, "scriptling-reference.md"), os.read_file(ref_path))
     child_config = {
         "name": new_name,
         "goal": new_goal,
@@ -930,14 +1062,26 @@ def _spawn_bot(args):
     if new_source is None:
         return "Error: source template corrupt."
     os.write_file(os.path.join(new_dir, "bot.py"), new_source)
-    _atomic_write_json(os.path.join(new_dir, "status.json"), {
+    child_status = {
         "id": new_name,
         "goal": new_goal,
         "status": "created",
         "created_at": int(time.time()),
         "gossip_addr": "",
         "fitness": {},
-    })
+        "parent": BOT_ID,
+    }
+    if WORKSPACE_NAME:
+        child_status["workspace"] = WORKSPACE_NAME
+    if WORKSPACE_PATH:
+        child_status["workspace_path"] = WORKSPACE_PATH
+    if GOSSIP_SECRET_OVERRIDE:
+        child_status["gossip_secret"] = GOSSIP_SECRET_OVERRIDE
+    if BOT_SCOPE != "open":
+        child_status["scope"] = BOT_SCOPE
+    if ALLOWED_WORKSPACES:
+        child_status["allowed_workspaces"] = ALLOWED_WORKSPACES
+    _atomic_write_json(os.path.join(new_dir, "status.json"), child_status)
     state["_spawn_count"] = spawn_count + 1
     _save_state(state)
     _bump_fitness("spawns")
@@ -951,12 +1095,17 @@ def _spawn_hybrid(args):
     new_goal = args["goal"]
 
     target_node = None
+    target_meta = {}
     for n in swarm.nodes():
-        if n.get("metadata", {}).get("id") == other_id:
+        meta = n.get("metadata", {})
+        if meta.get("id") == other_id:
             target_node = n
+            target_meta = meta
             break
     if target_node is None:
         return "Bot not found: " + other_id
+    if not _peer_in_scope(target_meta):
+        return "Bot not in your scope: " + other_id
 
     _log("INFO", "-> brain_req  to=" + other_id)
     req_payload = {"type": "brain_req"}
@@ -1078,7 +1227,7 @@ def _ask_consensus(args):
         return "n must be a positive odd number"
 
     members = swarm.nodes()
-    alive = [m for m in members if m.get("metadata", {}).get("id") != BOT_ID]
+    alive = [m for m in members if m.get("metadata", {}).get("id") != BOT_ID and _peer_in_scope(m.get("metadata", {}))]
     if len(alive) < n:
         return "Not enough peers (" + str(len(alive)) + " alive, need " + str(n) + ")"
 
@@ -1167,7 +1316,7 @@ tools.add("read_file_range", "Read a line range from a file (1-indexed)", {"path
 tools.add("write_file", "Write a file to your directory. Include a brief description of what the file contains.", {"path": "string", "content": "string", "description": "string?"}, _wrap_tool("write_file", _write_file))
 tools.add("append_file", "Append content to an existing file (creates it if absent)", {"path": "string", "content": "string"}, _wrap_tool("append_file", _append_file))
 tools.add("delete_file", "Delete a file from your directory", {"path": "string"}, _wrap_tool("delete_file", _delete_file))
-tools.add("replace_in_file", "Replace text in a file (more efficient than read+write for small edits)", {"path": "string", "old": "string", "new": "string", "all": "bool?"}, _wrap_tool("replace_in_file", _replace_in_file))
+tools.add("replace_in_file", "Replace text in a file (more efficient than read+write for small edits)", {"path": "string", "old": "string", "new": "string"}, _wrap_tool("replace_in_file", _replace_in_file))
 tools.add("list_dir", "List files in a directory", {"path": "string?"}, _wrap_tool("list_dir", _list_dir))
 tools.add("search", "Search file contents with a regex pattern", {"pattern": "string", "path": "string?", "glob": "string?", "ignore_case": "bool?"}, _wrap_tool("search", _search))
 tools.add("shell", "Run a shell command via the command proxy (sandboxed, no network tools)", {"command": "string", "cwd": "string?", "timeout": "int?"}, _wrap_tool("shell", _shell))
@@ -1219,6 +1368,9 @@ bot_agent = agent.Agent(
 bot_agent.request_timeout_ms = AGENT_REQUEST_TIMEOUT_MS
 
 # --- Main loop ---
+_log_error("Bot started  model=" + model_name + "  scope=" + BOT_SCOPE + "  workspace=" + (WORKSPACE_PATH or "none"))
+_log("INFO", "bot started  model=" + model_name + "  scope=" + BOT_SCOPE + "  workspace=" + (WORKSPACE_PATH or "none"))
+
 _tick_count = 0
 _consecutive_errors = 0
 
@@ -1228,6 +1380,10 @@ while True:
         _atomic_write_json(STATUS_PATH, _build_status("stopped"))
         cluster.stop()
         break
+
+    if _tick_count == 0 and _find_watchdog() is None:
+        _log("INFO", "waiting for watchdog...")
+        time.sleep(2)
 
     _tick_sleep = TICK_INTERVAL
     try:
@@ -1249,39 +1405,60 @@ while True:
             except Exception:
                 pass
 
-        unread_count = _inbox.size()
+        if _tick_count % 100 == 1:
+            try:
+                _rebuild_index()
+            except Exception:
+                pass
+
+        unread_msgs = []
+        while _inbox.size() > 0:
+            unread_msgs.append(_inbox.get())
+
         brain = _read_brain()
         brain_preview = _trunc(brain.replace("\n", " "), 80)
 
         _log_activity("=" * 72)
         _log_activity("TICK " + str(_tick_count) + "  " + time.strftime("%Y-%m-%d %H:%M:%S") + "  " + BOT_ID)
-        _log_activity("  model=" + model_name + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(unread_count) + "  entities=" + str(entity_count))
+        _log_activity("  model=" + model_name + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(len(unread_msgs)) + "  entities=" + str(entity_count))
         _log_activity("  fitness=" + json.dumps(fitness))
         if brain_preview:
             _log_activity("  brain: " + brain_preview + ("..." if len(brain) > 80 else ""))
         if election.is_leader():
             _log_activity("  role: LEADER")
         _log_activity("-" * 72)
+        _log("INFO", "tick " + str(_tick_count) + " start  swarm=" + str(cluster.num_alive()) + "  unread=" + str(len(unread_msgs)))
 
-        tick_msg = "Tick " + str(_tick_count) + ". Model: " + model_name + ". "
-        tick_msg += "Entities: " + str(entity_count) + ", "
-        tick_msg += "Unread: " + str(unread_count) + ", Swarm: " + str(cluster.num_alive()) + ".\n"
+        tick_msg = "## Context\n"
+        tick_msg += "Tick: " + str(_tick_count) + "  Model: " + model_name + "  Swarm: " + str(cluster.num_alive()) + "  Scope: " + BOT_SCOPE + "\n"
         tick_msg += "Fitness: " + json.dumps(fitness) + "\n"
         if election.is_leader():
-            tick_msg += "You are the swarm leader.\n"
+            tick_msg += "Role: swarm leader\n"
+        if WORKSPACE_PATH:
+            tick_msg += "Workspace: " + WORKSPACE_PATH + "\n"
 
         file_listing = _build_file_listing()
         if file_listing:
-            tick_msg += file_listing
+            tick_msg += "\n" + file_listing
 
         last_activity = state.get("_last_activity", "")
         if last_activity:
-            tick_msg += "Last tick you: " + last_activity + "\n"
+            tick_msg += "\nLast tick you: " + last_activity + "\n"
 
-        if unread_count > 0:
-            tick_msg += "You have " + str(unread_count) + " unread message" + ("" if unread_count == 1 else "s") + ". Check them.\n"
-
-        tick_msg += "What is your next action toward your goal?"
+        tick_msg += "\n## Instructions\n"
+        if unread_msgs:
+            tick_msg += "You have " + str(len(unread_msgs)) + " message" + ("" if len(unread_msgs) == 1 else "s") + ". Act on them immediately.\n\n"
+            for m in unread_msgs:
+                sender = m.get("from", "?")
+                content = m.get("content", "")
+                mtype = m.get("type", "message")
+                if mtype == "task_complete":
+                    tick_msg += "From " + sender + " [task_complete]: task_id=" + m.get("task_id", "") + " result=" + content + "\n"
+                else:
+                    tick_msg += "From " + sender + ": " + content + "\n"
+            tick_msg += "\nWhat is your next action?"
+        else:
+            tick_msg += "What is your next action toward your goal?"
 
         _lock_model()
         try:

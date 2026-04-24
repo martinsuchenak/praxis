@@ -49,7 +49,17 @@ def _detect_local_ip():
 
 def _bot_allowed_paths(bot_id):
     bot_dir = os.path.join(BOTS_DIR, bot_id)
-    return ",".join([bot_dir, BOTS_DIR, LOCKS_DIR])
+    paths = [bot_dir, BOTS_DIR, LOCKS_DIR]
+    bot_status = os.path.join(bot_dir, "status.json")
+    if os.path.exists(bot_status):
+        try:
+            status = json.loads(os.read_file(bot_status))
+            wp = status.get("workspace_path", "")
+            if wp and os.path.exists(wp):
+                paths.append(wp)
+        except Exception:
+            pass
+    return ",".join(paths)
 
 
 def _bot_spawn_cmd(bot_id, bot_script, log_path, append=False):
@@ -162,7 +172,33 @@ def _inject_block(source, start_marker, end_marker, content):
     )
 
 
-def _build_bwrap_cmd(command, bot_dir, cwd):
+def _load_workspaces():
+    path = os.path.join(PROJECT_DIR, "workspaces.json")
+    if os.path.exists(path):
+        try:
+            return json.loads(os.read_file(path))
+        except Exception:
+            pass
+    return {}
+
+
+def _ws_path(workspaces, name):
+    ws = workspaces.get(name, "")
+    if isinstance(ws, dict):
+        return ws.get("path", "")
+    return ws if isinstance(ws, str) else ""
+
+
+def _ws_config(workspaces, name):
+    ws = workspaces.get(name)
+    if isinstance(ws, dict):
+        return ws
+    if isinstance(ws, str):
+        return {"path": ws}
+    return {}
+
+
+def _build_bwrap_cmd(command, bot_dir, cwd, workspace_path=""):
     if os.environ.get("BOT_SHELL_SANDBOX", "true").lower() == "false":
         return None
     if not _BWRAP_AVAILABLE:
@@ -199,6 +235,9 @@ def _build_bwrap_cmd(command, bot_dir, cwd):
             if os.path.exists(host):
                 cmd += ["--ro-bind" if mode == "ro" else "--bind", host, container]
 
+    if workspace_path and os.path.exists(workspace_path):
+        cmd += ["--bind", workspace_path, workspace_path]
+
     cmd += ["--", "bash", "-c", command]
     return cmd
 
@@ -216,7 +255,9 @@ def cmd_spawn(name, goal, opts):
     brain = opts.get("brain", "") or "I am " + name + ". I was just created. I need to explore and understand my purpose.\n"
     seeds = [s.strip() for s in opts["seeds"].split(",") if s.strip()] if opts.get("seeds") else []
     thinking = opts.get("thinking", "true").lower() != "false"
-
+    workspace_name = opts.get("workspace", "")
+    scope = opts.get("scope", "")
+    allowed_workspaces = [s.strip() for s in opts["allowed_workspaces"].split(",") if s.strip()] if opts.get("allowed_workspaces") else []
     config = {
         "name": name,
         "goal": goal,
@@ -261,21 +302,53 @@ def cmd_spawn(name, goal, opts):
     os.makedirs(bot_dir)
     os.write_file(os.path.join(bot_dir, "bot.py"), source)
 
-    tmp = os.path.join(bot_dir, "status.json.tmp")
-    os.write_file(tmp, json.dumps({
+    entities_dir = os.path.join(bot_dir, "entities")
+    os.makedirs(entities_dir)
+    ref_src = os.path.join(LIB_DIR, "scriptling-reference.md")
+    if os.path.exists(ref_src):
+        os.write_file(os.path.join(entities_dir, "scriptling-reference.md"), os.read_file(ref_src))
+
+    workspaces = _load_workspaces()
+    status = {
         "id": name,
         "goal": goal,
         "status": "created",
         "created_at": int(time.time()),
         "gossip_addr": "",
         "fitness": {},
-    }, indent=2))
+    }
+    if workspace_name and workspace_name in workspaces:
+        ws_cfg = _ws_config(workspaces, workspace_name)
+        ws_path_val = ws_cfg.get("path", "")
+        if ws_path_val and os.path.exists(ws_path_val):
+            status["workspace"] = workspace_name
+            status["workspace_path"] = ws_path_val
+            ws_secret = ws_cfg.get("gossip_secret", "")
+            if ws_secret:
+                status["gossip_secret"] = ws_secret
+            effective_scope = scope or ws_cfg.get("default_scope", "isolated")
+        else:
+            effective_scope = scope or "open"
+    else:
+        effective_scope = scope or "open"
+    if effective_scope != "open":
+        status["scope"] = effective_scope
+    if allowed_workspaces:
+        status["allowed_workspaces"] = allowed_workspaces
+
+    tmp = os.path.join(bot_dir, "status.json.tmp")
+    os.write_file(tmp, json.dumps(status, indent=2))
     os.rename(tmp, os.path.join(bot_dir, "status.json"))
 
     _log("OK", "spawned " + name)
     print("  dir:   " + bot_dir)
     print("  goal:  " + goal)
     print("  model: " + (model or "(default)"))
+    print("  scope: " + effective_scope)
+    if workspace_name:
+        print("  workspace: " + workspace_name)
+    if allowed_workspaces:
+        print("  allowed_workspaces: " + ", ".join(allowed_workspaces))
     print("  start: scriptling bin/control.py start " + name)
 
 
@@ -709,10 +782,24 @@ def cmd_watchdog():
 
     secret = os.environ.get("BOT_GOSSIP_SECRET", "")
     allowlist = [h.strip() for h in os.environ.get("BOT_SHELL_ALLOWLIST", "").split(",") if h.strip()]
+    workspaces = _load_workspaces()
 
-    def _on_shell_request(msg):
-        payload = msg.get("payload", {})
-        if secret and payload.get("_secret", "") != secret:
+    _all_secrets = set()
+    if secret:
+        _all_secrets.add(secret)
+    for _ws_name, _ws_cfg in workspaces.items():
+        if isinstance(_ws_cfg, dict) and _ws_cfg.get("gossip_secret"):
+            _all_secrets.add(_ws_cfg["gossip_secret"])
+
+    def _get_ws_secret(ws_name):
+        ws_cfg = workspaces.get(ws_name, {})
+        if isinstance(ws_cfg, dict):
+            return ws_cfg.get("gossip_secret", "")
+        return ""
+
+    def _handle_shell(payload):
+        provided_secret = payload.get("_secret", "")
+        if _all_secrets and provided_secret not in _all_secrets:
             return {"exit_code": 1, "stderr": "Unauthorized"}
 
         bot_id = payload.get("bot_id", "")
@@ -745,7 +832,15 @@ def cmd_watchdog():
                 cwd = ""
         real_cwd = os.path.join(bot_dir, cwd) if cwd else bot_dir
 
-        bwrap_cmd = _build_bwrap_cmd(command, bot_dir, real_cwd)
+        workspace_path = ""
+        bot_status_path = os.path.join(bot_dir, "status.json")
+        try:
+            bot_status = json.loads(os.read_file(bot_status_path))
+            workspace_path = bot_status.get("workspace_path", "")
+        except Exception:
+            pass
+
+        bwrap_cmd = _build_bwrap_cmd(command, bot_dir, real_cwd, workspace_path)
         sandboxed = bwrap_cmd is not None
         _log("PROXY", bot_id + " cmd=" + _trunc(command, 60) + (" [bwrap]" if sandboxed else " [raw]"))
 
@@ -765,7 +860,74 @@ def cmd_watchdog():
         except Exception as e:
             return {"exit_code": 1, "stderr": str(e)}
 
-    proxy.handle_with_reply(gossip.MSG_USER, _on_shell_request)
+    def _handle_relay(payload):
+        from_bot = payload.get("from", "")
+        target_bot = payload.get("target_bot", "")
+        content = payload.get("content", "")
+        if not from_bot or not target_bot or not content:
+            return {"error": "Missing from, target_bot, or content"}
+
+        if not _is_valid_name(from_bot):
+            return {"error": "Invalid from bot ID"}
+        if not _is_valid_name(target_bot):
+            return {"error": "Invalid target bot ID"}
+
+        bot_status = _load_status(from_bot)
+        if not bot_status:
+            return {"error": "Unknown bot: " + from_bot}
+
+        bot_scope = bot_status.get("scope", "open")
+        if bot_scope != "gateway":
+            return {"error": "Bot is not gateway scope"}
+
+        allowed = bot_status.get("allowed_workspaces", [])
+
+        target_status = _load_status(target_bot)
+        if not target_status:
+            return {"error": "Target not found: " + target_bot}
+
+        target_ws = target_status.get("workspace", "")
+        if not target_ws:
+            return {"error": "Target bot has no workspace"}
+        if target_ws not in allowed:
+            return {"error": "Workspace '" + target_ws + "' not in allowed list"}
+
+        target_node = None
+        for n in proxy.alive_nodes():
+            if n.get("metadata", {}).get("id") == target_bot:
+                target_node = n
+                break
+
+        if target_node is None:
+            return {"error": "Target bot not online: " + target_bot}
+
+        relay_payload = {
+            "type": "relayed_message",
+            "from": from_bot,
+            "content": content,
+            "relayed_by": "watchdog",
+        }
+        ws_secret = _get_ws_secret(target_ws)
+        if ws_secret:
+            relay_payload["_secret"] = ws_secret
+        elif secret:
+            relay_payload["_secret"] = secret
+        proxy.send_to(target_node["id"], gossip.MSG_USER, relay_payload)
+        _log("RELAY", from_bot + " -> " + target_bot + " ws=" + target_ws)
+        return {"status": "relayed", "target": target_bot}
+
+    def _on_request(msg):
+        payload = msg.get("payload", {})
+        if not isinstance(payload, dict):
+            return None
+        msg_type = payload.get("type", "")
+        if msg_type == "shell_req":
+            return _handle_shell(payload)
+        if msg_type == "relay_req":
+            return _handle_relay(payload)
+        return None
+
+    proxy.handle_with_reply(gossip.MSG_USER, _on_request)
 
     sandbox_str = "bwrap" if _BWRAP_AVAILABLE else "unsandboxed"
     _log("START", "watchdog + command proxy [" + sandbox_str + "] interval=" + str(interval) + "s")
@@ -775,6 +937,18 @@ def cmd_watchdog():
     try:
         while True:
             try:
+                if proxy.num_alive() == 0:
+                    bots = _all_bots()
+                    for b in bots:
+                        addr = b.get("gossip_addr", "")
+                        if addr and b.get("status") == "running" and addr != "0.0.0.0:0":
+                            try:
+                                proxy.join([addr])
+                                _log("JOIN", "joined cluster via " + b["id"] + " @ " + addr)
+                                break
+                            except Exception:
+                                continue
+
                 bots = _all_bots()
                 for b in bots:
                     bot_id = b["id"]
@@ -782,6 +956,30 @@ def cmd_watchdog():
 
                     if b.get("status") == "created":
                         if os.path.exists(bot_script):
+                            if not b.get("workspace_path"):
+                                parent_id = b.get("parent", "")
+                                if parent_id:
+                                    parent_status_path = os.path.join(BOTS_DIR, parent_id, "status.json")
+                                    try:
+                                        parent_status = json.loads(os.read_file(parent_status_path))
+                                        wp = parent_status.get("workspace_path", "")
+                                        if wp:
+                                            b["workspace_path"] = wp
+                                            b["workspace"] = parent_status.get("workspace", "")
+                                        if not b.get("gossip_secret"):
+                                            gs = parent_status.get("gossip_secret", "")
+                                            if gs:
+                                                b["gossip_secret"] = gs
+                                        if not b.get("scope"):
+                                            ps = parent_status.get("scope", "")
+                                            if ps:
+                                                b["scope"] = ps
+                                        if not b.get("allowed_workspaces"):
+                                            paw = parent_status.get("allowed_workspaces", [])
+                                            if paw:
+                                                b["allowed_workspaces"] = paw
+                                    except Exception:
+                                        pass
                             b["status"] = "starting"
                             _save_status(bot_id, b)
                             log_path = os.path.join(BOTS_DIR, bot_id, "output.log")
@@ -821,6 +1019,7 @@ def main():
         print("Commands:")
         print("  spawn <name> <goal> [k=v ...]  Create a bot")
         print("    Options: base_url=  model=  brain=  seeds=  thinking=false")
+        print("             workspace=  scope=open|isolated|gateway|family  allowed_workspaces=ws1,ws2")
         print("  list                  List all bots (flags STALE after " + str(STALE_THRESHOLD) + "s)")
         print("  status                Live swarm view via gossip")
         print("  start <bot>           Start a bot")
