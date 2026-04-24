@@ -765,10 +765,20 @@ def cmd_restart_stale():
 def cmd_watchdog():
     interval = 30
 
-    proxy = gossip.create(bind_addr="0.0.0.0:0")
+    _wd_port = 37000
+    _wd_port_env = os.environ.get("BOT_WATCHDOG_PORT", "")
+    if _wd_port_env:
+        try:
+            _wd_port = int(_wd_port_env)
+        except Exception:
+            pass
+
+    proxy = gossip.create(bind_addr="0.0.0.0:" + str(_wd_port))
     proxy.start()
+    _wd_addr = LOCAL_IP + ":" + str(_wd_port)
     proxy.set_metadata("role", "watchdog")
     proxy.set_metadata("id", "watchdog-" + str(int(time.time())))
+    proxy.set_metadata("gossip_addr", _wd_addr)
 
     bots = _all_bots()
     for b in bots:
