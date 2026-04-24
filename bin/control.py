@@ -467,11 +467,11 @@ def cmd_send(bot_id, message):
         sys.exit(1)
 
 
-def cmd_tail(bot_id, log_name="output.log"):
+def cmd_tail(bot_id, log_name="bot.log"):
     if not _is_valid_name(bot_id):
         print("Invalid bot name.")
         sys.exit(1)
-    valid_logs = ("output.log", "activity.log", "errors.log")
+    valid_logs = ("bot.log", "output.log")
     if log_name not in valid_logs:
         print("Unknown log. Choose: " + ", ".join(valid_logs))
         sys.exit(1)
@@ -513,7 +513,7 @@ def cmd_logs(bot_id, lines=40):
         print("Invalid bot name.")
         sys.exit(1)
     bot_dir = os.path.join(BOTS_DIR, bot_id)
-    for log_name in ("activity.log", "errors.log", "output.log"):
+    for log_name in ("bot.log", "output.log"):
         log_path = os.path.join(bot_dir, log_name)
         print("--- " + log_name + " (last " + str(lines) + " lines) ---")
         if os.path.exists(log_path):
@@ -699,7 +699,7 @@ def cmd_export(bot_id):
 
         dest_bot_dir = os.path.join(staging_dir, "bots", bot_id)
         subprocess.run(["cp", "-r", bot_dir, dest_bot_dir])
-        for runtime_file in ("memory.db", "output.log", "errors.log", "activity.log"):
+        for runtime_file in ("memory.db", "output.log", "bot.log"):
             p = os.path.join(dest_bot_dir, runtime_file)
             if os.path.exists(p):
                 subprocess.run(["rm", "-rf", p])
@@ -1042,8 +1042,8 @@ def main():
         print("  restart-stale         Restart all bots flagged STALE")
         print("  export <bot>          Package bot + tools into a portable archive")
         print("  remove <bot>          Kill + delete bot directory")
-        print("  logs <bot> [N]        Last N lines of activity/error/output logs")
-        print("  tail <bot> [log]      Follow log in real time (default: output.log)")
+        print("  logs <bot> [N]        Last N lines of bot.log + output.log")
+        print("  tail <bot> [log]      Follow log in real time (default: bot.log)")
         print("  send <bot> <msg>      Send a message to a running bot")
         print("  watchdog              Auto-restart crashed bots + command proxy (runs until Ctrl+C)")
         sys.exit(1)
@@ -1111,7 +1111,7 @@ def main():
         cmd_logs(args[2], lines)
     elif command == "tail":
         if len(args) < 3:
-            print("Usage: control tail <bot-id> [output|activity|errors]")
+            print("Usage: control tail <bot-id> [bot|output]")
             sys.exit(1)
         log_name = args[3] + ".log" if len(args) > 3 else "output.log"
         cmd_tail(args[2], log_name)

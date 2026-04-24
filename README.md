@@ -32,9 +32,8 @@ bots/<name>/
   state.json          — Operational state: fitness counters, gossip port, last activity
   status.json         — Live status written each tick (read by control.py)
   memory.db/          — Persistent KV memory store
-  output.log          — stdout/stderr from nohup
-  errors.log          — Tick errors with timestamps
-  activity.log        — Per-tick trace: inputs, tool calls, results (rolling 100 KB)
+  bot.log             — Structured log: ticks, tool calls, messages, errors (rolling 500 KB)
+  output.log          — stdout/stderr from nohup (fallback)
   entities/           — All files the bot writes (plans, knowledge, scripts, data, ...)
 ```
 
@@ -196,8 +195,8 @@ scriptling bin/control.py status             # live swarm view via gossip with f
 ```bash
 scriptling bin/control.py logs Explorer         # last 40 lines of activity + errors + output
 scriptling bin/control.py logs Explorer 100     # last 100 lines
-scriptling bin/control.py tail Explorer         # follow output.log in real time
-scriptling bin/control.py tail Explorer activity  # follow activity.log in real time
+scriptling bin/control.py tail Explorer         # follow bot.log in real time
+scriptling bin/control.py tail Explorer output  # follow output.log in real time
 ```
 
 ### Send a Message
@@ -410,8 +409,8 @@ Memory tools are manually registered (not via agent auto-registration) so they g
 - **Brain and history on disk** — `brain.md` and `brain_history.json` live as plain files alongside the bot, not inside `state.json`. Brain updates don't rewrite the full state. `state.json` only holds fitness counters, gossip port, and last-tick activity summary. Existing bots with old-style state.json are automatically migrated on first startup.
 - **pkill-based kill** — `control kill` uses `pkill -f` with the bot's full absolute path, avoiding substring collisions.
 - **Path traversal guard** — `_safe_path` rejects `..` components and absolute paths to keep bots within their own directory.
-- **Activity log** — every tick writes a structured trace to `activity.log` (tool name, args, result summary) with a rolling 100 KB cap; use `control logs` or `control tail` to inspect what a bot is doing.
-- **Error log** — tick exceptions are written to `errors.log` with timestamps; the loop never silently swallows failures.
+- **Bot log** — every tick writes a structured log to `bot.log` (levelled entries: `START`, `INFO`, `MSG`, `TOOL`, `OK`/`ERR`, `ERROR`) with a rolling 500 KB cap. All tool calls, messages, errors, and tick summaries go here. Use `control logs` or `control tail` to inspect.
+- **Error handling** — tick exceptions are logged with level `ERROR` and trigger exponential backoff; the loop never silently swallows failures.
 - **Error backoff** — repeated tick failures trigger exponential backoff (up to `BOT_MAX_BACKOFF` seconds) so a broken bot doesn't hammer the API.
 - **Atomic writes** — all JSON writes use write-to-`.tmp`-then-rename.
 - **Spawn limiting** — each bot can create at most 10 children.

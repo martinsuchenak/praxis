@@ -38,7 +38,7 @@ LOCKS_DIR = os.path.join(os.path.dirname(BOTS_DIR), ".locks")
 
 STATE_PATH = os.path.join(BOT_DIR, "state.json")
 STATUS_PATH = os.path.join(BOT_DIR, "status.json")
-ERROR_LOG = os.path.join(BOT_DIR, "errors.log")
+BOT_LOG = os.path.join(BOT_DIR, "bot.log")
 
 WORKSPACE_PATH = ""
 WORKSPACE_NAME = ""
@@ -66,10 +66,7 @@ try:
         GOSSIP_SECRET_OVERRIDE = _gs
 except Exception:
     pass
-ACTIVITY_LOG = os.path.join(BOT_DIR, "activity.log")
-# --- DEFAULTS ---
-
-ACTIVITY_LOG_MAX = 100 * 1024
+BOT_LOG_MAX = 500 * 1024
 MAX_BRAIN_SIZE = 50000
 MAX_SPAWN_COUNT = 10
 MAX_BRAIN_HISTORY = 5
@@ -99,8 +96,30 @@ GOSSIP_MSG = gossip.MSG_USER
 
 
 # --- Helpers ---
+_log_buffer = []
+
+
 def _log(level, msg):
-    print(time.strftime("%Y-%m-%d %H:%M:%S") + " [" + level + "] [" + BOT_ID + "] " + msg)
+    line = time.strftime("%Y-%m-%d %H:%M:%S") + " [" + level + "] " + msg
+    _log_buffer.append(line)
+    print(line)
+
+
+def _flush_log():
+    if not _log_buffer:
+        return
+    try:
+        block = "\n".join(_log_buffer) + "\n"
+        del _log_buffer[:]
+        existing = ""
+        if os.path.exists(BOT_LOG):
+            existing = os.read_file(BOT_LOG)
+        combined = existing + block
+        if len(combined) > BOT_LOG_MAX:
+            combined = combined[-BOT_LOG_MAX:]
+        os.write_file(BOT_LOG, combined)
+    except Exception:
+        pass
 
 
 def _trunc(s, n):
@@ -109,51 +128,19 @@ def _trunc(s, n):
     return s[:n] + "..." if len(s) > n else s
 
 
-def _log_error(msg):
-    try:
-        entry = "[" + time.strftime("%Y-%m-%d %H:%M:%S") + "] " + msg + "\n"
-        existing = ""
-        if os.path.exists(ERROR_LOG):
-            existing = os.read_file(ERROR_LOG)
-        os.write_file(ERROR_LOG, existing + entry)
-    except Exception:
-        pass
-
-
-_activity_buffer = []
-
-
-def _log_activity(line):
-    _activity_buffer.append(line)
-
-
-def _flush_activity():
-    if not _activity_buffer:
-        return
-    try:
-        block = "\n".join(_activity_buffer) + "\n"
-        del _activity_buffer[:]
-        existing = ""
-        if os.path.exists(ACTIVITY_LOG):
-            existing = os.read_file(ACTIVITY_LOG)
-        combined = existing + block
-        if len(combined) > ACTIVITY_LOG_MAX:
-            combined = combined[-ACTIVITY_LOG_MAX:]
-        os.write_file(ACTIVITY_LOG, combined)
-    except Exception:
-        pass
-
-
 def _wrap_tool(name, fn):
     def wrapper(args):
-        _log_activity("  TOOL " + name)
+        parts = [name]
         for k, v in args.items():
             s = str(v).replace("\n", " ")
-            _log_activity("       " + k + ": " + _trunc(s, 120))
+            parts.append(k + "=" + _trunc(s, 120))
+        _log("TOOL", " ".join(parts))
         result = fn(args)
         summary = str(result).replace("\n", " ")
-        prefix = "  ERROR" if (summary.startswith("Error") or summary.startswith("{\"exit_code\": 1") or "exit_code\":1" in summary) else "    OK"
-        _log_activity(prefix + "  " + _trunc(summary, 160))
+        if summary.startswith("Error") or summary.startswith("{\"exit_code\": 1") or "exit_code\":1" in summary:
+            _log("ERR", _trunc(summary, 160))
+        else:
+            _log("OK", _trunc(summary, 160))
         return result
     return wrapper
 
@@ -630,7 +617,7 @@ if seed_addrs:
         cluster.join(seed_addrs)
         _joined = True
     except Exception as e:
-        _log_error("Seed join failed: " + str(e))
+        _log("ERROR", "Seed join failed: " + str(e))
 
 if not _joined:
     try:
@@ -644,7 +631,7 @@ if not _joined:
                 _joined = True
         mgroup.close()
     except Exception as e:
-        _log_error("Multicast discovery failed: " + str(e))
+        _log("ERROR", "Multicast discovery failed: " + str(e))
 
 try:
     mg = mc.join(MULTICAST_ADDR, MULTICAST_PORT)
@@ -1137,7 +1124,7 @@ def _evolve_brain(args):
         return "Brain unchanged."
     old_lines = len(old_brain.split("\n"))
     new_lines = len(content.split("\n"))
-    _log_activity("       diff: " + str(old_lines) + " -> " + str(new_lines) + " lines")
+    _log("EVOLVE", "brain " + str(old_lines) + " -> " + str(new_lines) + " lines")
     history = _read_brain_history()
     history.append({"ts": int(time.time()), "snapshot": _trunc(old_brain, 500), "reason": _trunc(reason, 200)})
     history = history[-MAX_BRAIN_HISTORY:]
@@ -1296,7 +1283,7 @@ def _memory_recall(args):
     mtype = args.get("type", "")
     try:
         results = mem.recall(query=query, limit=limit, type=mtype)
-        _log_activity("       results: " + str(len(results)) + " memories")
+        _log("MEM", "recall " + str(len(results)) + " results")
         return json.dumps(results)
     except Exception as e:
         return "Error: " + str(e)
@@ -1368,8 +1355,8 @@ bot_agent = agent.Agent(
 bot_agent.request_timeout_ms = AGENT_REQUEST_TIMEOUT_MS
 
 # --- Main loop ---
-_log_error("Bot started  model=" + model_name + "  scope=" + BOT_SCOPE + "  workspace=" + (WORKSPACE_PATH or "none"))
-_log("INFO", "bot started  model=" + model_name + "  scope=" + BOT_SCOPE + "  workspace=" + (WORKSPACE_PATH or "none"))
+_log("START", "bot started  model=" + model_name + "  scope=" + BOT_SCOPE + "  workspace=" + (WORKSPACE_PATH or "none"))
+_flush_log()
 
 _tick_count = 0
 _consecutive_errors = 0
@@ -1394,8 +1381,7 @@ while True:
         fitness = state.get("fitness", {})
         _tick_count += 1
         _tick_start = time.time()
-        del _activity_buffer[:]
-        _log("INFO", "tick " + str(_tick_count) + " start  swarm=" + str(cluster.num_alive()) + "  unread=" + str(_inbox.size()))
+        del _log_buffer[:]
 
         if _tick_count % MULTICAST_ANNOUNCE_EVERY == 0:
             try:
@@ -1415,19 +1401,7 @@ while True:
         while _inbox.size() > 0:
             unread_msgs.append(_inbox.get())
 
-        brain = _read_brain()
-        brain_preview = _trunc(brain.replace("\n", " "), 80)
-
-        _log_activity("=" * 72)
-        _log_activity("TICK " + str(_tick_count) + "  " + time.strftime("%Y-%m-%d %H:%M:%S") + "  " + BOT_ID)
-        _log_activity("  model=" + model_name + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(len(unread_msgs)) + "  entities=" + str(entity_count))
-        _log_activity("  fitness=" + json.dumps(fitness))
-        if brain_preview:
-            _log_activity("  brain: " + brain_preview + ("..." if len(brain) > 80 else ""))
-        if election.is_leader():
-            _log_activity("  role: LEADER")
-        _log_activity("-" * 72)
-        _log("INFO", "tick " + str(_tick_count) + " start  swarm=" + str(cluster.num_alive()) + "  unread=" + str(len(unread_msgs)))
+        _log("INFO", "tick " + str(_tick_count) + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(len(unread_msgs)) + "  fitness=" + json.dumps(fitness))
 
         tick_msg = "## Context\n"
         tick_msg += "Tick: " + str(_tick_count) + "  Model: " + model_name + "  Swarm: " + str(cluster.num_alive()) + "  Scope: " + BOT_SCOPE + "\n"
@@ -1477,28 +1451,21 @@ while True:
         _bump_fitness("ticks_alive")
         _atomic_write_json(STATUS_PATH, _build_status())
 
-        if _activity_buffer:
+        if _log_buffer:
             state = _load_state()
-            state["_last_activity"] = _trunc("; ".join(_activity_buffer), 500)
+            state["_last_activity"] = _trunc("; ".join(_log_buffer), 500)
             _save_state(state)
 
         elapsed = str(int((time.time() - _tick_start) * 1000)) + "ms"
-        _log_activity("-" * 72)
-        _log_activity("DONE  elapsed=" + elapsed)
-        _log_activity("")
-        _flush_activity()
         fitness = _load_state().get("fitness", {})
         _log("INFO", "tick " + str(_tick_count) + " done  elapsed=" + elapsed + "  fitness=" + json.dumps(fitness))
+        _flush_log()
         _consecutive_errors = 0
 
     except Exception as e:
         _consecutive_errors += 1
         _tick_sleep = min(TICK_INTERVAL * (2 ** min(_consecutive_errors - 1, 4)), MAX_BACKOFF_SEC)
-        _log_activity("-" * 72)
-        _log_activity("ERROR " + str(e))
-        _log_activity("")
-        _flush_activity()
-        _log_error("Tick " + str(_tick_count) + ": " + str(e))
-        _log("ERROR", "tick " + str(_tick_count) + " failed  error=" + str(e) + "  backoff=" + str(_tick_sleep) + "s  consecutive=" + str(_consecutive_errors))
+        _log("ERROR", "tick " + str(_tick_count) + " failed: " + str(e) + "  backoff=" + str(_tick_sleep) + "s")
+        _flush_log()
 
     time.sleep(_tick_sleep)
