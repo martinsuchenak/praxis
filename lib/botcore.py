@@ -66,6 +66,7 @@ try:
         GOSSIP_SECRET_OVERRIDE = _gs
 except Exception:
     pass
+# --- DEFAULTS ---
 BOT_LOG_MAX = 500 * 1024
 MAX_BRAIN_SIZE = 50000
 MAX_SPAWN_COUNT = 10
@@ -78,6 +79,7 @@ AGENT_COMPACTION_THRESHOLD = 70
 AGENT_REQUEST_TIMEOUT_MS = 300000
 GOSSIP_SECRET = ""
 LOG_VERBOSE = False
+LOG_RESULT_MAX = 80
 TICK_INTERVAL = 30
 STALE_THRESHOLD_SEC = 120
 SCRIPT_TIMEOUT = 30
@@ -117,7 +119,9 @@ def _flush_log():
         combined = existing + block
         if len(combined) > BOT_LOG_MAX:
             combined = combined[-BOT_LOG_MAX:]
-        os.write_file(BOT_LOG, combined)
+        tmp = BOT_LOG + ".tmp"
+        os.write_file(tmp, combined)
+        os.rename(tmp, BOT_LOG)
     except Exception:
         pass
 
@@ -137,10 +141,20 @@ def _wrap_tool(name, fn):
         _log("TOOL", " ".join(parts))
         result = fn(args)
         summary = str(result).replace("\n", " ")
-        if summary.startswith("Error") or summary.startswith("{\"exit_code\": 1") or "exit_code\":1" in summary:
-            _log("ERR", _trunc(summary, 160))
-        else:
-            _log("OK", _trunc(summary, 160))
+        _err_prefixes = ["Error", "Invalid", "File not found", "Bot not found",
+                         "Parent bot not found", "Relay error", "Spawn limit",
+                         "Brain too large", "Bot already exists", "Cannot delete",
+                         "No changes", "Path not found", "Script not found",
+                         "Not enough peers", "No responses"]
+        _is_err = any(summary.startswith(p) for p in _err_prefixes)
+        if not _is_err:
+            try:
+                _obj = json.loads(summary)
+                if isinstance(_obj.get("exit_code"), int) and _obj["exit_code"] != 0:
+                    _is_err = True
+            except Exception:
+                pass
+        _log("ERR" if _is_err else "OK", _trunc(summary, LOG_RESULT_MAX))
         return result
     return wrapper
 
@@ -234,9 +248,16 @@ def _lock_model():
     ticket_file = os.path.join(queue_dir, ticket)
     os.write_file(ticket_file, str(int(time.time())))
 
+    _last_ticket_refresh = int(time.time())
     while True:
         try:
             now = int(time.time())
+            if now - _last_ticket_refresh >= 60:
+                try:
+                    os.write_file(ticket_file, str(now))
+                    _last_ticket_refresh = now
+                except Exception:
+                    pass
             entries = []
             for fname in os.listdir(queue_dir):
                 if not fname.endswith(".wait"):
@@ -356,6 +377,8 @@ def _safe_path(base_dir, rel_path):
     return os.path.join(base_dir, rel_path)
 
 
+# NOTE: An identical copy of this function lives in control.py for initial bot spawning.
+# Both copies must be kept in sync.
 def _inject_config(source, config):
     config_json = json.dumps(config, indent=4)
     config_json = config_json.replace(":true", ":True").replace(":false", ":False").replace(":null", ":None")
@@ -483,6 +506,31 @@ def _build_file_listing():
     return _rebuild_index()
 
 
+def _consensus_llm_call(question, model, b_url, a_key, queue_name):
+    """Background worker: makes the consensus LLM call and posts the answer to a named Queue."""
+    import scriptling.ai as _ai
+    import scriptling.runtime.sync as _sync
+    try:
+        _c = _ai.Client(b_url, api_key=a_key)
+        _ans = _c.ask(model, "/no_think\n" + question,
+                      system_prompt="Answer briefly and concisely in one sentence.",
+                      max_tokens=256)
+    except Exception as _e:
+        _ans = "Error: " + str(_e)
+    _sync.Queue(queue_name, maxsize=1).put(_ans)
+
+
+def _summarize_tick(log_entries):
+    actions = []
+    for line in log_entries:
+        for tag in ("[TOOL] ", "[EVOLVE] "):
+            idx = line.find(tag)
+            if idx >= 0:
+                actions.append(line[idx + len(tag):])
+                break
+    return "; ".join(actions[:15]) if actions else ""
+
+
 # --- Network startup ---
 api_key = os.environ.get("BOT_API_KEY", "")
 base_url = os.environ.get("BOT_BASE_URL", "")
@@ -591,10 +639,22 @@ def _on_gossip_msg(msg):
         if not question:
             return {"answer": "", "from": BOT_ID}
         _log("INFO", "<- consensus_req  from=" + sender_id + "  q=" + _trunc(question, 80))
-        try:
-            answer = client.ask(model_name, "/no_think\n" + question, system_prompt="Answer briefly and concisely in one sentence.", max_tokens=256)
-        except Exception as e:
-            answer = "Error: " + str(e)
+        # Run the LLM call in a background goroutine; share result via a named Queue.
+        # The gossip goroutine polls (yielding at each sleep) with a 30 s hard timeout.
+        _req_id = str(int(time.time() * 1000)) + "_" + (sender_id[:8] if sender_id else "x")
+        _qname = "cons-result-" + _req_id
+        _rq = runtime.sync.Queue(_qname, maxsize=1)
+        runtime.background("cons-" + _req_id, _consensus_llm_call,
+                            question, model_name, base_url, api_key, _qname)
+        answer = None
+        _deadline = time.time() + 30
+        while time.time() < _deadline:
+            if _rq.size() > 0:
+                answer = _rq.get()
+                break
+            time.sleep(0.5)
+        if answer is None:
+            answer = "Timed out"
         try:
             mem.remember("Consensus from " + sender_id + ": " + question + " -> " + answer)
         except Exception:
@@ -834,7 +894,7 @@ def _search(args):
     if real_path is None or not os.path.exists(real_path):
         return "Path not found: " + rel_path
     try:
-        out = greplib.search(pattern, real_path, ignore_case=ignore_case, file_pattern=glob_pat)
+        out = greplib.pattern(pattern, real_path, ignore_case=ignore_case, glob=glob_pat)
         if not out:
             return "(no matches)"
         return str(out).replace(BOT_DIR + "/", "")[:20000]
@@ -859,8 +919,19 @@ def _replace_in_file(args):
         return "File not found: " + path
     try:
         count = sedlib.replace(old, new, real_path)
-        if count == 0:
+        if count > 0:
+            _rebuild_index()
+            return "Replaced in " + path
+    except Exception:
+        pass
+    # Fallback: read/replace/write covers any edge case where sedlib returns 0 unexpectedly.
+    try:
+        content = os.read_file(real_path)
+        if old not in content:
             return "No changes: old text not found."
+        tmp = real_path + ".tmp"
+        os.write_file(tmp, content.replace(old, new))
+        os.rename(tmp, real_path)
         _rebuild_index()
         return "Replaced in " + path
     except Exception as e:
@@ -1451,9 +1522,10 @@ while True:
         _bump_fitness("ticks_alive")
         _atomic_write_json(STATUS_PATH, _build_status())
 
-        if _log_buffer:
+        activity = _summarize_tick(_log_buffer)
+        if activity:
             state = _load_state()
-            state["_last_activity"] = _trunc("; ".join(_log_buffer), 500)
+            state["_last_activity"] = _trunc(activity, 500)
             _save_state(state)
 
         elapsed = str(int((time.time() - _tick_start) * 1000)) + "ms"

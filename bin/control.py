@@ -136,6 +136,8 @@ def _all_bots():
     return bots
 
 
+# NOTE: An identical copy of this function lives in botcore.py for child/self-spawning.
+# Both copies must be kept in sync.
 def _inject_config(source, config):
     config_json = json.dumps(config, indent=4)
     config_json = config_json.replace(":true", ":True").replace(":false", ":False").replace(":null", ":None")
@@ -711,6 +713,10 @@ def cmd_export(bot_id):
         if os.path.exists(env_example):
             subprocess.run(["cp", env_example, os.path.join(staging_dir, ".env.example")])
 
+        _export_ws_path = (_load_status(bot_id) or {}).get("workspace_path", "")
+        _export_allowed = "$PROJ_DIR/bots/" + bot_id + ",$PROJ_DIR/bots,$PROJ_DIR/.locks"
+        if _export_ws_path:
+            _export_allowed += "," + _export_ws_path
         bootstrap = (
             "#!/bin/bash\nset -e\n"
             "PROJ_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n"
@@ -720,7 +726,7 @@ def cmd_export(bot_id):
             "fi\n"
             "BOT_IP=$(hostname -I 2>/dev/null | awk '{print $1}')\n"
             "export BOT_IP=${BOT_IP:-0.0.0.0}\n"
-            "nohup scriptling --disable-lib=subprocess --allowed-paths=\"$PROJ_DIR/bots/" + bot_id + ",$PROJ_DIR/bots,$PROJ_DIR/.locks\" "
+            "nohup scriptling --disable-lib=subprocess --allowed-paths=\"" + _export_allowed + "\" "
             "\"$PROJ_DIR/bots/" + bot_id + "/bot.py\" "
             "> \"$PROJ_DIR/bots/" + bot_id + "/output.log\" 2>&1 &\n"
             "echo \"Started " + bot_id + " (PID $!)\"\n"
@@ -871,6 +877,10 @@ def cmd_watchdog():
             return {"exit_code": 1, "stderr": str(e)}
 
     def _handle_relay(payload):
+        provided_secret = payload.get("_secret", "")
+        if _all_secrets and provided_secret not in _all_secrets:
+            return {"error": "Unauthorized"}
+
         from_bot = payload.get("from", "")
         target_bot = payload.get("target_bot", "")
         content = payload.get("content", "")
@@ -947,7 +957,7 @@ def cmd_watchdog():
     try:
         while True:
             try:
-                if proxy.num_alive() == 0:
+                if proxy.num_alive() <= 1:
                     bots = _all_bots()
                     for b in bots:
                         addr = b.get("gossip_addr", "")
@@ -1113,7 +1123,7 @@ def main():
         if len(args) < 3:
             print("Usage: control tail <bot-id> [bot|output]")
             sys.exit(1)
-        log_name = args[3] + ".log" if len(args) > 3 else "output.log"
+        log_name = args[3] + ".log" if len(args) > 3 else "bot.log"
         cmd_tail(args[2], log_name)
     elif command == "send":
         if len(args) < 4:

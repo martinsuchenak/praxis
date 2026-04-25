@@ -16,6 +16,7 @@ DEFAULT_API_KEY = os.environ.get("BOT_API_KEY", "")
 DEFAULT_BASE_URL = os.environ.get("BOT_BASE_URL", "")
 DEFAULT_MODEL = os.environ.get("BOT_MODEL", "")
 LOG_VERBOSE = os.environ.get("BOT_LOG_VERBOSE", "false").lower() == "true"
+LOG_RESULT_MAX = int(os.environ.get("BOT_LOG_RESULT_MAX", "80"))
 TICK_INTERVAL = int(os.environ.get("BOT_TICK_INTERVAL", "30"))
 GOSSIP_SECRET = os.environ.get("BOT_GOSSIP_SECRET", "")
 STALE_THRESHOLD_SEC = int(os.environ.get("BOT_STALE_THRESHOLD", "120"))

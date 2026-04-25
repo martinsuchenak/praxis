@@ -4,6 +4,8 @@ Autonomous, self-evolving bots powered by LLMs. Each bot is a single self-contai
 
 > Built on [Scriptling](https://github.com/paularlott/scriptling) — a Python-like scripting language, created by [paularlott](https://github.com/paularlott).
 
+> **Disclaimer:** This project is under constant development. Changes are frequently not backward-compatible. Some effort has been made to restrict what bots can do, but there is still a real chance they will cause damage — to files, services, or anything else they have access to. The author is not responsible for any damage caused by bots running from this codebase. Use common sense: do not run bots in any environment where such risk is not acceptable.
+
 ## Architecture
 
 ```
@@ -59,6 +61,7 @@ BOT_MODEL=your-model-name
 BOT_TICK_INTERVAL=30          # optional: seconds between ticks (default: 30)
 BOT_SCRIPT_TIMEOUT=30         # optional: scriptling script execution timeout (default: 30)
 BOT_LOG_VERBOSE=true          # optional: disable log truncation for debugging
+BOT_LOG_RESULT_MAX=80         # optional: max chars of tool result shown per log line (default: 80)
 BOT_GOSSIP_SECRET=shared-key  # optional: authenticate inter-bot gossip messages
 BOT_STALE_THRESHOLD=120       # optional: seconds before a "running" bot is flagged STALE (default: 120)
 BOT_MAX_BACKOFF=600           # optional: max backoff seconds after repeated tick errors (default: 600)
@@ -69,6 +72,7 @@ BOT_SHELL_ALLOWLIST=          # optional: comma-separated executables bots may r
 BOT_SHELL_SANDBOX=true        # optional: sandbox shell commands with bwrap (default: true, requires bwrap installed)
 BOT_SHELL_MOUNTS=             # optional: extra mounts inside the sandbox, format: mode:host_path:container_path (comma-separated)
                               #   e.g. BOT_SHELL_MOUNTS=ro:/shared/data:/data,rw:/tmp/scratch:/scratch
+BOT_WATCHDOG_PORT=37000       # optional: gossip port for the watchdog node (default: 37000)
 ```
 
 API keys are never baked into bot source files — bots read them from the environment at runtime.
@@ -414,7 +418,7 @@ Memory tools are manually registered (not via agent auto-registration) so they g
 - **Error backoff** — repeated tick failures trigger exponential backoff (up to `BOT_MAX_BACKOFF` seconds) so a broken bot doesn't hammer the API.
 - **Atomic writes** — all JSON writes use write-to-`.tmp`-then-rename.
 - **Spawn limiting** — each bot can create at most 10 children.
-- **Consensus inline** — incoming `consensus_req` gossip messages are answered inline by the `handle_with_reply` handler, not deferred to tick time. This is simpler than the old queue-based approach.
+- **Consensus handler** — incoming `consensus_req` messages are answered via `handle_with_reply`. The LLM call runs in a `runtime.background()` goroutine; the result is shared back to the gossip goroutine via a named `Queue`. A 30 s poll-with-sleep loop caps how long the gossip goroutine can block.
 - **Thinking mode** — controlled per-bot via the `thinking` CONFIG field; implemented by prepending `/no_think` to the LLM message rather than a parameter, since that's what the model router requires.
 - **Memory tool observability** — memory tools are registered manually (not via `agent.Agent(memory=mem)` auto-registration) so they go through `_wrap_tool` for activity logging. The `reason` parameter on `memory_remember` and `evolve_brain` is optional, since smaller models may fail to provide required parameters.
 - **Brain evolution logging** — `evolve_brain` logs the line-count diff (`old -> new lines`) and stores an optional `reason` in brain history for traceability.
@@ -426,7 +430,7 @@ Memory tools are manually registered (not via agent auto-registration) so they g
 - **Layered filesystem sandboxing** — three complementary layers: (1) `scriptling --allowed-paths` restricts the scriptling `os`/`pathlib`/`glob` libraries to the bot's own dir, `bots/`, and `.locks/` — enforced by the runtime, not bypassable via source edits since env vars are read-only; (2) `subprocess` library is disabled entirely — bots cannot spawn processes; (3) `bwrap` sandboxes shell commands on the watchdog — the bot's directory is mounted as `/`, system dirs (`/usr`, `/bin`, `/lib`, `/etc`) are read-only, `/tmp` is writable. Set `BOT_SHELL_SANDBOX=false` to disable. If `bwrap` is not installed a warning is logged and commands run unsandboxed.
 - **Watchdog command proxy** — the watchdog (`control watchdog`) joins the gossip cluster and handles `shell_req` requests from bots. It enforces a shell allowlist (`BOT_SHELL_ALLOWLIST`), blocks `curl`/`wget` (bots should use `http_request` instead), and wraps commands in `bwrap`. Workspace mounts are resolved per-request from `workspaces.json` using the bot's `status.json`.
 - **Workspaces** — bots working on external projects get a named workspace. The operator provides a name at spawn time; `control.py` resolves it from `workspaces.json` and stores the host path in `status.json` (not in bot source). The path is added to `--allowed-paths` and mounted in bwrap. Bots can read/write workspace files with their own tools. Children inherit the workspace via the watchdog (parent-child tracking). Bots cannot change their workspace or spawn into a different one.
-- **Gossip request/reply** — brain requests and consensus use `gossip.send_request()` / `handle_with_reply()` instead of manual rendezvous queues. The handler runs synchronously in the gossip goroutine — consensus answers are computed inline (blocking the goroutine briefly) but avoid the complexity of deferred queues.
+- **Gossip request/reply** — brain requests and consensus use `gossip.send_request()` / `handle_with_reply()` instead of manual rendezvous queues. Brain requests return immediately. Consensus runs the LLM call in a `runtime.background()` goroutine and polls a named `Queue` (max 30 s) so the gossip goroutine is never blocked indefinitely.
 - **Node groups and leader election** — bots join a `{"role": "bot"}` criteria group so tools iterate only over bot peers (not the watchdog). A leader election with 51% quorum provides a swarm coordinator. Leader status is visible in tick messages and `control list`.
 - **Gossip auth** — optional shared secret via `BOT_GOSSIP_SECRET`. When set, all inter-bot messages include `_secret` in the payload and unauthenticated messages are dropped. Bots on different machines just need the same secret in their `.env`.
 - **Stale detection** — `control list` flags bots as STALE if `last_tick_ts` (updated every tick) is older than `BOT_STALE_THRESHOLD` seconds (default 120).
