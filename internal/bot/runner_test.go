@@ -250,3 +250,124 @@ while True:
 		t.Error("bot should not be running after kill")
 	}
 }
+
+func TestRunnerPoolStop(t *testing.T) {
+	root, mgr := makeRunnerProject(t)
+	makeBot(t, mgr, "stopbot")
+	blockScript := `
+import time
+while True:
+    time.sleep(0.1)
+`
+	if err := os.WriteFile(filepath.Join(root, "bots", "stopbot", "bot.py"), []byte(blockScript), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pool := testRunnerPool(t, mgr)
+	if err := pool.Start("stopbot"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		state, _ := LoadState(mgr.BotDir("stopbot"))
+		if state.Status == StatusRunning {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if err := pool.Stop("stopbot"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	state, _ := LoadState(mgr.BotDir("stopbot"))
+	if state.Status != StatusStopped {
+		t.Errorf("expected stopped, got %q", state.Status)
+	}
+	if pool.IsRunning("stopbot") {
+		t.Error("should not be running after Stop")
+	}
+}
+
+func TestRunnerPoolStopAll(t *testing.T) {
+	root, mgr := makeRunnerProject(t)
+	blockScript := `
+import time
+while True:
+    time.sleep(0.1)
+`
+	for _, name := range []string{"sa1", "sa2"} {
+		makeBot(t, mgr, name)
+		if err := os.WriteFile(filepath.Join(root, "bots", name, "bot.py"), []byte(blockScript), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pool := testRunnerPool(t, mgr)
+	pool.Start("sa1")
+	pool.Start("sa2")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		s1, _ := LoadState(mgr.BotDir("sa1"))
+		s2, _ := LoadState(mgr.BotDir("sa2"))
+		if s1.Status == StatusRunning && s2.Status == StatusRunning {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	pool.StopAll()
+
+	for _, name := range []string{"sa1", "sa2"} {
+		state, _ := LoadState(mgr.BotDir(name))
+		if state.Status != StatusStopped {
+			t.Errorf("%s: expected stopped, got %q", name, state.Status)
+		}
+		if pool.IsRunning(name) {
+			t.Errorf("%s: should not be running after StopAll", name)
+		}
+	}
+}
+
+func TestRunnerPoolKillAll(t *testing.T) {
+	root, mgr := makeRunnerProject(t)
+	blockScript := `
+import time
+while True:
+    time.sleep(0.1)
+`
+	for _, name := range []string{"ka1", "ka2"} {
+		makeBot(t, mgr, name)
+		if err := os.WriteFile(filepath.Join(root, "bots", name, "bot.py"), []byte(blockScript), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pool := testRunnerPool(t, mgr)
+	pool.Start("ka1")
+	pool.Start("ka2")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		s1, _ := LoadState(mgr.BotDir("ka1"))
+		s2, _ := LoadState(mgr.BotDir("ka2"))
+		if s1.Status == StatusRunning && s2.Status == StatusRunning {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	pool.KillAll()
+
+	for _, name := range []string{"ka1", "ka2"} {
+		state, _ := LoadState(mgr.BotDir(name))
+		if state.Status != StatusKilled {
+			t.Errorf("%s: expected killed, got %q", name, state.Status)
+		}
+		if pool.IsRunning(name) {
+			t.Errorf("%s: should not be running after KillAll", name)
+		}
+	}
+}

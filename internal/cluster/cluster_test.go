@@ -212,6 +212,68 @@ func TestHandleShellReqUnknownBot(t *testing.T) {
 	}
 }
 
+func TestHandleShellReqAllowlist(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "wbot", &bot.BotConfig{})
+	mock := testutil.NewMockSandbox()
+	mock.SetResult(&sandbox.ExecResult{ExitCode: 0, Stdout: "ok", Stderr: ""}, nil)
+	log := logslog.New(logslog.Config{Level: "error"})
+	n := &Node{
+		manager: bot.NewManager(root),
+		sandbox: mock,
+		log:     log,
+		cfg:     Config{ShellAllowlist: []string{"ls", "cat"}, AuthDisabled: true},
+	}
+
+	t.Run("allowed_command", func(t *testing.T) {
+		pkt := testPacket(t, &ShellRequest{BotID: "wbot", Command: "ls -la"})
+		reply, err := n.handleShellReq(nil, pkt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sr := reply.(*ShellReply)
+		if sr.Error != "" {
+			t.Errorf("unexpected error: %s", sr.Error)
+		}
+	})
+
+	t.Run("disallowed_command", func(t *testing.T) {
+		pkt := testPacket(t, &ShellRequest{BotID: "wbot", Command: "rm -rf /"})
+		reply, _ := n.handleShellReq(nil, pkt)
+		sr := reply.(*ShellReply)
+		if sr.Error == "" {
+			t.Error("expected error for disallowed command")
+		}
+		if sr.ExitCode != 1 {
+			t.Error("expected exit code 1")
+		}
+	})
+}
+
+func TestParseAllowlist(t *testing.T) {
+	cases := []struct {
+		input string
+		want  []string
+	}{
+		{"", nil},
+		{"ls", []string{"ls"}},
+		{"ls,cat,grep", []string{"ls", "cat", "grep"}},
+		{" ls , cat ", []string{"ls", "cat"}},
+	}
+	for _, tc := range cases {
+		got := parseAllowlist(tc.input)
+		if len(got) != len(tc.want) {
+			t.Errorf("parseAllowlist(%q) = %v, want %v", tc.input, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("parseAllowlist(%q)[%d] = %q, want %q", tc.input, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
 // --- handleSpawnReq ---
 
 func TestHandleSpawnReqSuccess(t *testing.T) {

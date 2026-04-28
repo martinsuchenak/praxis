@@ -175,15 +175,57 @@ praxis tui [flags]
 
 Slash commands available in the TUI:
 
+### Bot Lifecycle
+
 | Command | Description |
 |---|---|
-| `/select <name>` | Switch log view to named bot |
-| `/start <name>` | Start a bot |
-| `/stop <name>` | Graceful stop |
-| `/kill <name>` | SIGTERM |
-| `/restart <name>` | Kill + start |
-| `/spawn <name> <goal>` | Spawn a new bot |
-| `/logs <name>` | Show last log lines for a bot |
-| `/exit` | Exit the TUI |
+| `/spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>]` | Create and start a new bot |
+| `/start [bot]` | Start a bot (defaults to selected) |
+| `/start-all` | Start all stopped bots |
+| `/stop [bot]` | Graceful stop — signals on next tick (defaults to selected) |
+| `/stop-all` | Graceful stop all running bots |
+| `/kill [bot]` | Immediate SIGTERM (defaults to selected) |
+| `/kill-all` | Kill all running bots |
+| `/restart [bot]` | Kill and restart (defaults to selected) |
+| `/restart-stale` | Restart all bots flagged as stale |
+| `/remove <bot>` | Kill and permanently delete a bot (removes locks + directory) |
 
-Typing plain text (without a `/` prefix) delivers the message to the currently selected bot's inbox.
+### Communication
+
+| Command | Description |
+|---|---|
+| `/send <bot> <msg>` | Send a text message to a running bot via gossip |
+| `/select <bot>` | Switch log view to a specific bot |
+
+Plain text (no `/` prefix) sends to the currently selected bot's inbox.
+
+### Inspection
+
+| Command | Description |
+|---|---|
+| `/list` | Show all bots with status, ticks, spawns, and gossip address |
+| `/info [bot]` | Show full bot config and state (defaults to selected) |
+| `/logs [bot] [lines]` | Show recent log lines from `bot.log` and `output.log` (default: 40) |
+| `/top` | Scroll the log panel to the top |
+
+### Export / Import
+
+```bash
+/export <bot> [path]          # Export bot archive (default: <bot>.tar.gz)
+```
+
+### Workspaces
+
+```bash
+/workspace list                                                    # Show all workspaces with bots
+/workspace add <name> <path> [gossip_secret=<s>] [scope=<s>]      # Register a workspace
+/workspace remove <name>                                          # Remove (fails if bots use it)
+```
+
+### Display
+
+| Command | Description |
+|---|---|
+| `/theme <name>` | Switch the TUI colour theme |
+| `/visualise` | Enter Matrix-style swarm visualisation (exit with `/select`) |
+| `/exit` | Exit the TUI |
