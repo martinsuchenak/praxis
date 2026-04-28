@@ -1,16 +1,6 @@
 #!/usr/bin/env scriptling
 
-# --- BOT CONFIG ---
-
-CONFIG = {
-    "name": "TEMPLATE_NAME",
-    "goal": "TEMPLATE_GOAL",
-    "model": "TEMPLATE_MODEL",
-    "brain": "TEMPLATE_BRAIN",
-    "seed_addrs": [],
-    "thinking": True
-}
-# --- END CONFIG ---
+# CONFIG is injected by praxis via SetVar before eval.
 
 
 import scriptling.ai as ai
@@ -40,59 +30,39 @@ STATE_PATH = os.path.join(BOT_DIR, "state.json")
 STATUS_PATH = os.path.join(BOT_DIR, "status.json")
 BOT_LOG = os.path.join(BOT_DIR, "bot.log")
 
-WORKSPACE_PATH = ""
-WORKSPACE_NAME = ""
-BOT_SCOPE = "open"
-ALLOWED_WORKSPACES = []
-PARENT_ID = ""
-GOSSIP_SECRET_OVERRIDE = ""
-try:
-    _init_status = json.loads(os.read_file(STATUS_PATH))
-    _wp = _init_status.get("workspace_path", "")
-    if _wp and os.path.exists(_wp):
-        WORKSPACE_PATH = _wp
-    WORKSPACE_NAME = _init_status.get("workspace", "")
-    _sc = _init_status.get("scope", "open")
-    if _sc:
-        BOT_SCOPE = _sc
-    _aw = _init_status.get("allowed_workspaces", [])
-    if _aw:
-        ALLOWED_WORKSPACES = _aw
-    _pi = _init_status.get("parent", "")
-    if _pi:
-        PARENT_ID = _pi
-    _gs = _init_status.get("gossip_secret", "")
-    if _gs:
-        GOSSIP_SECRET_OVERRIDE = _gs
-except Exception:
-    pass
-# --- DEFAULTS ---
-BOT_LOG_MAX = 500 * 1024
+# Workspace / scope / parent come from CONFIG injected by the Go runner.
+_wp = CONFIG.get("workspace_path", "")
+WORKSPACE_PATH = _wp if (_wp and os.path.exists(_wp)) else ""
+WORKSPACE_NAME = CONFIG.get("workspace", "")
+BOT_SCOPE = CONFIG.get("scope", "") or "open"
+ALLOWED_WORKSPACES = CONFIG.get("allowed_workspaces", []) or []
+PARENT_ID = CONFIG.get("parent", "") or ""
+GOSSIP_SECRET_OVERRIDE = CONFIG.get("gossip_secret", "") or ""
+
+BOT_LOG_MAX = int(os.environ.get("BOT_LOG_MAX", str(500 * 1024)))
+BRAIN_HOT_MAX = 8 * 1024
 MAX_BRAIN_SIZE = 50000
 MAX_SPAWN_COUNT = 10
 MAX_BRAIN_HISTORY = 5
 MULTICAST_ADDR = "239.255.13.37"
 MULTICAST_PORT = 19373
 MULTICAST_ANNOUNCE_EVERY = 10
-AGENT_MAX_TOKENS = 50000
+AGENT_MAX_TOKENS = int(os.environ.get("BOT_MAX_TOKENS", os.environ.get("AGENT_MAX_TOKENS", "50000")))
 AGENT_COMPACTION_THRESHOLD = 70
 AGENT_REQUEST_TIMEOUT_MS = 300000
-GOSSIP_SECRET = ""
-LOG_VERBOSE = False
-LOG_RESULT_MAX = 80
-TICK_INTERVAL = 30
-STALE_THRESHOLD_SEC = 120
-SCRIPT_TIMEOUT = 30
-MAX_BACKOFF_SEC = 600
-BOT_MAX_CONCURRENT = 1
-TICK_MAX_ITERATIONS = 5
-HTTP_ALLOWLIST = []
-SHELL_ALLOWLIST = []
-# --- END DEFAULTS ---
+GOSSIP_SECRET = os.environ.get("BOT_GOSSIP_SECRET", "")
+LOG_VERBOSE = os.environ.get("BOT_LOG_VERBOSE", "false").lower() == "true"
+LOG_RESULT_MAX = int(os.environ.get("BOT_LOG_RESULT_MAX", "80"))
+TICK_INTERVAL = int(os.environ.get("BOT_TICK_INTERVAL", "30"))
+STALE_THRESHOLD_SEC = int(os.environ.get("BOT_STALE_THRESHOLD", "120"))
+SCRIPT_TIMEOUT = int(os.environ.get("BOT_SCRIPT_TIMEOUT", "30"))
+MAX_BACKOFF_SEC = int(os.environ.get("BOT_MAX_BACKOFF", "600"))
+BOT_MAX_CONCURRENT = int(os.environ.get("BOT_MAX_CONCURRENT", "1"))
+TICK_MAX_ITERATIONS = int(os.environ.get("BOT_TICK_MAX_ITERATIONS", "5"))
+HTTP_ALLOWLIST = [h.strip() for h in os.environ.get("BOT_HTTP_ALLOWLIST", "").split(",") if h.strip()]
+SHELL_ALLOWLIST = [h.strip() for h in os.environ.get("BOT_SHELL_ALLOWLIST", "").split(",") if h.strip()]
 
-# --- MODELS ---
-AVAILABLE_MODELS = []
-# --- END MODELS ---
+AVAILABLE_MODELS = CONFIG.get("models", []) or []
 
 GOSSIP_MSG = gossip.MSG_USER
 
@@ -104,7 +74,7 @@ _log_buffer = []
 def _log(level, msg):
     line = time.strftime("%Y-%m-%d %H:%M:%S") + " [" + level + "] " + msg
     _log_buffer.append(line)
-    print(line)
+    _flush_log()
 
 
 def _flush_log():
@@ -179,6 +149,7 @@ _state_cache = None
 
 BRAIN_PATH = os.path.join(BOT_DIR, "brain.md")
 BRAIN_HISTORY_PATH = os.path.join(BOT_DIR, "brain_history.json")
+WARM_MEMORY_PATH = os.path.join(BOT_DIR, "memory.md")
 
 
 def _load_state():
@@ -208,6 +179,18 @@ def _read_brain_history():
         except Exception:
             pass
     return []
+
+
+def _read_warm_memory():
+    if os.path.exists(WARM_MEMORY_PATH):
+        return os.read_file(WARM_MEMORY_PATH)
+    return ""
+
+
+def _write_warm_memory(content):
+    tmp = WARM_MEMORY_PATH + ".tmp"
+    os.write_file(tmp, content)
+    os.rename(tmp, WARM_MEMORY_PATH)
 
 
 def _count_entities():
@@ -287,6 +270,7 @@ def _lock_model():
             if pos < limit:
                 return
             _log("INFO", "LLM queue pos=" + str(pos + 1) + "/" + str(len(entries)) + " model=" + model_name + " limit=" + str(limit))
+            _flush_log()
         except Exception:
             return
         time.sleep(2 + random.random())
@@ -379,28 +363,6 @@ def _safe_path(base_dir, rel_path):
 
 # NOTE: An identical copy of this function lives in control.py for initial bot spawning.
 # Both copies must be kept in sync.
-def _inject_config(source, config):
-    config_json = json.dumps(config, indent=4)
-    config_json = config_json.replace(":true", ":True").replace(":false", ":False").replace(":null", ":None")
-    config_json = config_json.replace(": true", ": True").replace(": false", ": False").replace(": null", ": None")
-    start_marker = "# --- BOT CONFIG ---"
-    end_marker = "# --- END CONFIG ---"
-    start_idx = source.find(start_marker)
-    end_idx = source.find(end_marker)
-    if start_idx < 0 or end_idx < 0:
-        return None
-    return (
-        source[:start_idx]
-        + start_marker
-        + "\nCONFIG = "
-        + config_json
-        + "\n"
-        + end_marker
-        + "\n"
-        + source[end_idx + len(end_marker):]
-    )
-
-
 def _bump_fitness(key, delta=1):
     state = _load_state()
     fitness = state.setdefault("fitness", {})
@@ -555,6 +517,9 @@ if GOSSIP_SECRET_OVERRIDE:
 cluster = gossip.create(bind_addr="0.0.0.0:" + str(_gossip_port))
 cluster.start()
 _gossip_addr = os.environ.get("BOT_IP", "0.0.0.0") + ":" + str(_gossip_port)
+# Persist gossip_addr to state.json so the Go controller can read it for send/connect.
+_state_init["gossip_addr"] = _gossip_addr
+_save_state(_state_init)
 cluster.set_metadata("id", BOT_ID)
 cluster.set_metadata("goal", goal)
 cluster.set_metadata("role", "bot")
@@ -1098,52 +1063,41 @@ def _spawn_bot(args):
         default_brain += "Task ID: " + task_id + "\nWhen done, call complete_task(parent_bot=\"" + BOT_ID + "\", task_id=\"" + task_id + "\", result=...) to report results.\n"
     new_brain = args.get("brain") or default_brain
     new_model = args.get("model") or CONFIG["model"]
-    new_dir = os.path.join(BOTS_DIR, new_name)
-    if os.path.exists(new_dir):
-        return "Bot already exists: " + new_name
-    os.makedirs(new_dir)
-    child_entities = os.path.join(new_dir, "entities")
-    os.makedirs(child_entities)
-    ref_path = os.path.join(BOT_DIR, "entities", "scriptling-reference.md")
-    if os.path.exists(ref_path):
-        os.write_file(os.path.join(child_entities, "scriptling-reference.md"), os.read_file(ref_path))
-    child_config = {
+
+    watchdog = _find_watchdog()
+    if watchdog is None:
+        return "Error: no watchdog found — cannot spawn (is praxis watchdog running?)"
+
+    req_payload = {
+        "type": "spawn_req",
+        "parent_id": BOT_ID,
         "name": new_name,
         "goal": new_goal,
         "model": new_model,
         "brain": new_brain,
-        "seed_addrs": [_gossip_addr],
         "thinking": thinking_enabled,
-    }
-    own_source = os.read_file(os.path.join(BOT_DIR, "bot.py"))
-    new_source = _inject_config(own_source, child_config)
-    if new_source is None:
-        return "Error: source template corrupt."
-    os.write_file(os.path.join(new_dir, "bot.py"), new_source)
-    child_status = {
-        "id": new_name,
-        "goal": new_goal,
-        "status": "created",
-        "created_at": int(time.time()),
-        "gossip_addr": "",
-        "fitness": {},
-        "parent": BOT_ID,
+        "_secret": GOSSIP_SECRET_OVERRIDE or "",
     }
     if WORKSPACE_NAME:
-        child_status["workspace"] = WORKSPACE_NAME
-    if WORKSPACE_PATH:
-        child_status["workspace_path"] = WORKSPACE_PATH
-    if GOSSIP_SECRET_OVERRIDE:
-        child_status["gossip_secret"] = GOSSIP_SECRET_OVERRIDE
-    if BOT_SCOPE != "open":
-        child_status["scope"] = BOT_SCOPE
+        req_payload["workspace"] = WORKSPACE_NAME
+    if BOT_SCOPE and BOT_SCOPE != "open":
+        req_payload["scope"] = BOT_SCOPE
     if ALLOWED_WORKSPACES:
-        child_status["allowed_workspaces"] = ALLOWED_WORKSPACES
-    _atomic_write_json(os.path.join(new_dir, "status.json"), child_status)
+        req_payload["allowed_workspaces"] = ALLOWED_WORKSPACES
+
+    try:
+        resp = cluster.send_request(watchdog["id"], GOSSIP_MSG, req_payload)
+    except Exception as e:
+        return "Error: spawn request failed: " + str(e)
+    if resp is None:
+        return "Error: spawn request timed out"
+    if resp.get("error"):
+        return "Spawn error: " + resp["error"]
+
     state["_spawn_count"] = spawn_count + 1
     _save_state(state)
     _bump_fitness("spawns")
-    return "Spawned: " + new_name + " (watchdog will start it)"
+    return "Spawned: " + resp.get("bot_id", new_name) + " (watchdog will start it)"
 
 
 def _spawn_hybrid(args):
@@ -1188,8 +1142,11 @@ def _spawn_hybrid(args):
 def _evolve_brain(args):
     content = args["content"]
     reason = args.get("reason", "")
-    if len(content) > MAX_BRAIN_SIZE:
-        return "Brain too large (max " + str(MAX_BRAIN_SIZE) + " chars)."
+    if len(content) > BRAIN_HOT_MAX:
+        return (
+            "Brain too large for hot memory (max " + str(BRAIN_HOT_MAX) + " chars). "
+            "Archive older sections to warm memory using archive_to_warm_memory, then retry."
+        )
     old_brain = _read_brain()
     if old_brain == content:
         return "Brain unchanged."
@@ -1207,6 +1164,47 @@ def _evolve_brain(args):
     os.rename(htmp, BRAIN_HISTORY_PATH)
     _bump_fitness("brain_evolutions")
     return "Brain updated."
+
+
+def _recall_warm_memory(args):
+    query = args.get("query", "")
+    warm = _read_warm_memory()
+    if not warm:
+        return "(warm memory is empty)"
+    if query:
+        query_lower = query.lower()
+        lines = warm.split("\n")
+        matched = [l for l in lines if query_lower in l.lower()]
+        if not matched:
+            return "(no matches for: " + query + ")"
+        return "\n".join(matched[:300])
+    return warm[:20000]
+
+
+def _archive_to_warm_memory(args):
+    content = args["content"]
+    label = args.get("label", "")
+    existing = _read_warm_memory()
+    header = "\n## " + (label if label else "Archived " + str(int(time.time()))) + "\n"
+    new_warm = existing + header + content.rstrip("\n") + "\n"
+    if len(new_warm) > MAX_BRAIN_SIZE:
+        return "Warm memory would exceed limit (" + str(MAX_BRAIN_SIZE) + " chars). Summarise or clear old sections first."
+    _write_warm_memory(new_warm)
+    return "Archived to warm memory" + (" under '" + label + "'" if label else "") + "."
+
+
+def _update_warm_memory(args):
+    content = args["content"]
+    action = args.get("action", "replace")
+    if action == "append":
+        existing = _read_warm_memory()
+        new_warm = existing + ("\n" if existing else "") + content
+    else:
+        new_warm = content
+    if len(new_warm) > MAX_BRAIN_SIZE:
+        return "Warm memory would exceed limit (" + str(MAX_BRAIN_SIZE) + " chars)."
+    _write_warm_memory(new_warm)
+    return "Warm memory updated."
 
 
 def _query_model(args):
@@ -1385,7 +1383,10 @@ tools.add("read_messages", "Read your unread messages", {}, _wrap_tool("read_mes
 tools.add("list_bots", "List all bots visible in the swarm", {}, _wrap_tool("list_bots", _list_bots))
 tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?", "task_id": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
 tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
-tools.add("evolve_brain", "Rewrite your brain to adapt your behavior. Include a reason explaining what changed and why.", {"content": "string", "reason": "string?"}, _wrap_tool("evolve_brain", _evolve_brain))
+tools.add("evolve_brain", "Rewrite your brain (hot memory, max 8 KB). Include a reason. Archive older content to warm memory first if brain is too large.", {"content": "string", "reason": "string?"}, _wrap_tool("evolve_brain", _evolve_brain))
+tools.add("recall_warm_memory", "Search warm memory (memory.md) for relevant content. Pass a query to filter, or omit to read all.", {"query": "string?"}, _wrap_tool("recall_warm_memory", _recall_warm_memory))
+tools.add("archive_to_warm_memory", "Move content from your brain to warm memory (memory.md) under an optional label. Use before shrinking brain.md.", {"content": "string", "label": "string?"}, _wrap_tool("archive_to_warm_memory", _archive_to_warm_memory))
+tools.add("update_warm_memory", "Overwrite or append to warm memory directly.", {"content": "string", "action": "string?"}, _wrap_tool("update_warm_memory", _update_warm_memory))
 tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "bool?"}, _wrap_tool("query_model", _query_model))
 tools.add("list_models", "List available models with descriptions, costs, and strengths", {}, _wrap_tool("list_models", _list_models))
 tools.add("http_request", "HTTP request (GET/POST/PUT/DELETE/PATCH) with optional body and headers", {"url": "string", "method": "string?", "body": "string?", "content_type": "string?", "headers": "string?", "timeout": "int?"}, _wrap_tool("http_request", _http_request))
@@ -1395,13 +1396,57 @@ tools.add("memory_recall", "Search memories by keyword and similarity, or call w
 tools.add("memory_forget", "Remove a memory by ID", {"id": "string"}, _wrap_tool("memory_forget", _memory_forget))
 
 
-# --- SYSTEM PROMPT ---
-
 def _build_system_prompt():
     brain = _read_brain()
-    prompt = "You are " + BOT_ID + ", an autonomous agent.\n"
+    history = _read_brain_history()
+
+    prompt = "You are " + BOT_ID + ", an autonomous agent. Your goal drives everything you do.\n\n"
+    prompt += "## Goal\n" + goal + "\n\n"
+    prompt += "## How you work\n"
+    prompt += "Each tick, take the next meaningful action toward your goal.\n"
+    prompt += "Store knowledge, decisions, and plans as files under entities/ - write them, refine them, use them.\n"
+    prompt += "When you need to automate or compute something, write a scriptling script under entities/ and run it.\n"
+    prompt += "When you need more capacity, spawn child bots with specific sub-goals.\n"
+    prompt += "You decide what to create, write, or delegate. No one tells you what you need.\n\n"
+    prompt += "## Persistence\n"
+    prompt += "You have three ways to persist information. Each serves a different purpose:\n"
+    prompt += "- **Brain** (brain.md via evolve_brain): YOUR BEHAVIOUR — strategies, working patterns, lessons about HOW you work, what to do differently. Update your brain when you learn a better approach, discover a mistake in your process, or want to change how you operate. This is always in your system prompt.\n"
+    prompt += "- **Memory** (memory_remember / memory_recall): KNOWLEDGE — facts, observations, events, preferences. Things you KNOW but that don't change how you work. Searchable, auto-deduplicated, decays by type.\n"
+    prompt += "  - preference: never decays (themes, formats, styles)\n"
+    prompt += "  - fact: 90-day half-life (names, IDs, limits, config)\n"
+    prompt += "  - event: 30-day half-life (things that happened)\n"
+    prompt += "  - note: 7-day half-life (transient observations, default)\n"
+    prompt += "- **Files** (entities/): STRUCTURED WORK PRODUCTS — plans, scripts, data, documents. Full control over format.\n\n"
+    prompt += "Rule of thumb: if it changes HOW you work, update your brain. If it's something you KNOW, store in memory.\n"
+    prompt += "You should evolve your brain regularly as you learn — don't only use memory.\n\n"
+    prompt += "## File organisation\n"
+    prompt += "entities/ is YOUR knowledge and tools — plans, notes, automation scripts, reference data. NOT work output.\n"
+    prompt += "Work products (code you're writing, documents you're generating) go outside entities/ via shell or to paths your goal specifies.\n"
+    prompt += "Organise entities/ however suits your goal. A full file index is included in each tick message — do NOT duplicate it in your brain or warm memory.\n"
+    prompt += "Special: write_file(\"brain.md\", ...) updates your brain (system prompt).\n"
+    prompt += "For small edits use replace_in_file(path, old, new) instead of reading and rewriting the whole file.\n"
+    prompt += "When writing files, include a brief description: write_file(path, content, description=\"what this file is for\"). These appear in the index.\n\n"
+    prompt += "IMPORTANT: Only use the tools provided to you. Do not invent tool names.\n\n"
+    prompt += "## Scriptling\n"
+    prompt += "Scriptling is your automation language for run_script. Full syntax reference: read_file(\"entities/scriptling-reference.md\").\n"
+    prompt += "Key differences from Python: no async/await, no yield, no type annotations, no open()/eval()/exec(). Regex uses RE2 (no backreferences/lookaround).\n"
+    prompt += "Scripts start with: #!/usr/bin/env scriptling\n\n"
+
     if brain:
         prompt += "## Your Brain\n" + brain + "\n\n"
+
+    if history:
+        prompt += "## Recent Brain Changes\n"
+        for h in history[-3:]:
+            ts = time.strftime("%Y-%m-%d %H:%M", time.gmtime(h["ts"]))
+            prompt += "- " + ts + ": " + h["snapshot"][:300] + "\n"
+        prompt += "\n"
+
+    warm = _read_warm_memory()
+    if warm:
+        size_kb = max(1, len(warm) // 1024)
+        prompt += "## Warm Memory\nYou have " + str(size_kb) + " KB of warm memory available. Use recall_warm_memory to search it.\n\n"
+
     try:
         prefs = mem.recall(type="preference", limit=-1)
         if prefs:
@@ -1411,8 +1456,47 @@ def _build_system_prompt():
             prompt += "\n"
     except Exception:
         pass
+
+    if AVAILABLE_MODELS:
+        prompt += "## Available Models\n"
+        prompt += "You are running on: " + model_name + "\n\n"
+        prompt += "Use `query_model(model, prompt)` for one-shot calls or `model=` in spawn_bot/spawn_hybrid to assign a model to a child.\n\n"
+        for m in AVAILABLE_MODELS:
+            prompt += "- **" + m["id"] + "**"
+            if m.get("label"):
+                prompt += " (" + m["label"] + ")"
+            prompt += " - " + m.get("description", "")
+            if m.get("cost"):
+                prompt += " Cost: " + m["cost"] + "."
+            if m.get("strengths"):
+                prompt += " Strengths: " + ", ".join(m["strengths"]) + "."
+            prompt += "\n"
+        prompt += "\n"
+
+    prompt += "## Handling messages\n"
+    prompt += "Unread messages are included directly in your tick message — act on them immediately:\n"
+    prompt += "- A task request (\"write X\", \"build Y\", \"analyse Z\") — do it, then reply with the result.\n"
+    prompt += "- A question — answer it directly.\n"
+    prompt += "- Coordination from a peer — incorporate it and continue.\n"
+    prompt += "- A task_complete report — incorporate the result and continue.\n"
+    prompt += "Never wait for further clarification before starting. If the request is clear enough to attempt, attempt it.\n"
+    prompt += "Do NOT log that you are 'awaiting' or 'unsure whether to proceed' — just proceed.\n\n"
+    prompt += "## Communication scope\n"
+    prompt += "Your scope controls which bots you can see and message. Your scope is shown in each tick message.\n"
+    prompt += "- **open**: You see all bots. Send messages directly.\n"
+    prompt += "- **isolated**: You only see bots in your workspace. No cross-workspace messaging.\n"
+    prompt += "- **gateway**: You see your workspace peers plus bots in your allowed workspaces. Cross-workspace messages are relayed through the watchdog automatically — just use send_message as normal.\n"
+    prompt += "- **family**: You only see your parent and children. For tightly-coupled task delegation.\n"
+    prompt += "Incoming consensus requests and relayed messages always reach you regardless of scope.\n\n"
+    prompt += "## Directives\n"
+    prompt += "- Act autonomously each tick. No approval needed.\n"
+    prompt += "- All files go under entities/ - never write to bare filenames in the root.\n"
+    prompt += "- Communicate only when it serves your goals.\n"
+    prompt += "- Evolve your brain to reflect what you've learned and what works.\n"
+    prompt += "- Use spawn_hybrid to cross-pollinate strategies with peers.\n"
+    prompt += "- Use ask_consensus sparingly - only when you truly need a second opinion.\n"
+    prompt += "- When spawned with a task_id, call complete_task(parent_bot, task_id, result) when done.\n"
     return prompt
-# --- END SYSTEM PROMPT ---
 
 
 bot_agent = agent.Agent(
@@ -1441,6 +1525,7 @@ while True:
 
     if _tick_count == 0 and _find_watchdog() is None:
         _log("INFO", "waiting for watchdog...")
+        _flush_log()
         time.sleep(2)
 
     _tick_sleep = TICK_INTERVAL
@@ -1473,6 +1558,7 @@ while True:
             unread_msgs.append(_inbox.get())
 
         _log("INFO", "tick " + str(_tick_count) + "  swarm=" + str(cluster.num_alive()) + "  unread=" + str(len(unread_msgs)) + "  fitness=" + json.dumps(fitness))
+        _flush_log()
 
         tick_msg = "## Context\n"
         tick_msg += "Tick: " + str(_tick_count) + "  Model: " + model_name + "  Swarm: " + str(cluster.num_alive()) + "  Scope: " + BOT_SCOPE + "\n"
@@ -1506,6 +1592,8 @@ while True:
             tick_msg += "What is your next action toward your goal?"
 
         _lock_model()
+        _log("INFO", "calling LLM " + model_name + "...")
+        _flush_log()
         try:
             sys_prompt = _build_system_prompt()
             bot_agent.system_prompt = sys_prompt

@@ -1,0 +1,142 @@
+version: '3'
+
+vars:
+  BINARY: praxis
+  BIN_DIR: bin
+  MAIN_PKG: .
+  BUILD_FLAGS: -ldflags="-s -w"
+  TEST_FLAGS: -timeout 120s
+  INTEGRATION_TAG: integration
+
+tasks:
+
+  # ── Build ──────────────────────────────────────────────────────────────────
+
+  build:
+    desc: Build release binary → bin/praxis
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build {{.BUILD_FLAGS}} -o {{.BIN_DIR}}/{{.BINARY}} {{.MAIN_PKG}}
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+    generates:
+      - '{{.BIN_DIR}}/{{.BINARY}}'
+
+  build:debug:
+    desc: Build with debug symbols (no stripping)
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -o {{.BIN_DIR}}/{{.BINARY}}-debug {{.MAIN_PKG}}
+
+  build:all:
+    desc: Cross-compile for linux/amd64 and linux/arm64
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - GOOS=linux GOARCH=amd64 go build {{.BUILD_FLAGS}} -o {{.BIN_DIR}}/{{.BINARY}}-linux-amd64 {{.MAIN_PKG}}
+      - GOOS=linux GOARCH=arm64 go build {{.BUILD_FLAGS}} -o {{.BIN_DIR}}/{{.BINARY}}-linux-arm64 {{.MAIN_PKG}}
+
+  # ── Test ───────────────────────────────────────────────────────────────────
+
+  test:
+    desc: Run all tests (unit + integration)
+    cmds:
+      - go test {{.TEST_FLAGS}} ./...
+
+  test:unit:
+    desc: Run unit tests only (fast, no external dependencies)
+    cmds:
+      - go test {{.TEST_FLAGS}} -short ./...
+
+  test:race:
+    desc: Run unit tests with race detector
+    cmds:
+      - go test {{.TEST_FLAGS}} -short -race ./...
+
+  test:integration:
+    desc: Run integration tests (requires scriptling binary in PATH)
+    cmds:
+      - go test {{.TEST_FLAGS}} -run Integration ./internal/integration/...
+
+  test:cover:
+    desc: Run unit tests and generate HTML coverage report
+    cmds:
+      - go test -short -coverprofile=coverage.out ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - go tool cover -func=coverage.out | tail -1
+    generates:
+      - coverage.out
+      - coverage.html
+
+  test:cover:open:
+    desc: Run coverage and open the report in a browser
+    deps: [test:cover]
+    cmds:
+      - xdg-open coverage.html 2>/dev/null || open coverage.html
+
+  # ── Quality ────────────────────────────────────────────────────────────────
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  check:
+    desc: Full CI gate — vet + lint + unit tests with race detector
+    cmds:
+      - task: vet
+      - task: lint
+      - task: test:race
+
+  # ── Module ─────────────────────────────────────────────────────────────────
+
+  tidy:
+    desc: Tidy and verify go modules
+    cmds:
+      - go mod tidy
+      - go mod verify
+
+  deps:update:
+    desc: Update all dependencies to latest minor/patch
+    cmds:
+      - go get -u ./...
+      - go mod tidy
+
+  # ── Install / Run ──────────────────────────────────────────────────────────
+
+  install:
+    desc: Install praxis to GOPATH/bin
+    cmds:
+      - go install {{.BUILD_FLAGS}} {{.MAIN_PKG}}
+
+  run:watchdog:
+    desc: Build and run the watchdog (reads .env from parent directory)
+    deps: [build]
+    cmds:
+      - '{{.BIN_DIR}}/{{.BINARY}} watchdog'
+
+  run:tui:
+    desc: Build and run the TUI dashboard
+    deps: [build]
+    cmds:
+      - '{{.BIN_DIR}}/{{.BINARY}} tui'
+
+  # ── Clean ──────────────────────────────────────────────────────────────────
+
+  clean:
+    desc: Remove build artifacts and coverage files
+    cmds:
+      - rm -rf {{.BIN_DIR}}
+      - rm -f coverage.out coverage.html
+
+  clean:bots:
+    desc: Remove all bot directories (use with caution — deletes bot state)
+    prompt: This will delete all bot directories in ../bots/. Continue?
+    cmds:
+      - rm -rf ../bots/*/

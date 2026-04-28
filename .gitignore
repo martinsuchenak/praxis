@@ -4,3 +4,10 @@ shared/*
 models.json
 .locks/*
 workspaces.json
+
+# Go build outputs
+bin/
+*.test
+coverage.out
+coverage.html
+.task/

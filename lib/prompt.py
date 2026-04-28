@@ -24,7 +24,7 @@ def _build_system_prompt():
     prompt += "## File organisation\n"
     prompt += "entities/ is YOUR knowledge and tools — plans, notes, automation scripts, reference data. NOT work output.\n"
     prompt += "Work products (code you're writing, documents you're generating) go outside entities/ via shell or to paths your goal specifies.\n"
-    prompt += "Organise entities/ however suits your goal. A full index is included in each tick message.\n"
+    prompt += "Organise entities/ however suits your goal. A full file index is included in each tick message — do NOT duplicate it in your brain or warm memory.\n"
     prompt += "Special: write_file(\"brain.md\", ...) updates your brain (system prompt).\n"
     prompt += "For small edits use replace_in_file(path, old, new) instead of reading and rewriting the whole file.\n"
     prompt += "When writing files, include a brief description: write_file(path, content, description=\"what this file is for\"). These appear in the index.\n\n"
@@ -32,7 +32,7 @@ def _build_system_prompt():
     prompt += "## Scriptling\n"
     prompt += "Scriptling is your automation language for run_script. Full syntax reference: read_file(\"entities/scriptling-reference.md\").\n"
     prompt += "Key differences from Python: no async/await, no yield, no type annotations, no open()/eval()/exec(). Regex uses RE2 (no backreferences/lookaround).\n"
-    prompt += "Scripts start with: #!/usr/bin/env scriptling\n\n"
+    prompt += "Scripts start with: #!/usr/bin/env scriptling, scripts extension must be `.py`\n\n"
 
     if brain:
         prompt += "## Your Brain\n" + brain + "\n\n"
