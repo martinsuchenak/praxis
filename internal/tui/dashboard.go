@@ -1055,10 +1055,10 @@ var greenDim = gotui.Color(0x009922)
 var greenDark = gotui.Color(0x005511)
 var greenDarkest = gotui.Color(0x003308)
 
-var glowEdge = gotui.Color(0x00BB33)
-var glowFill = gotui.Color(0x33FF55)
-var glowFeature = gotui.Color(0x88FF99)
-var glowHighlight = gotui.Color(0xCCFFCC)
+var glowEdge = gotui.Color(0x006622)
+var glowFill = gotui.Color(0x008833)
+var glowFeature = gotui.Color(0x22AA44)
+var glowHighlight = gotui.Color(0x44CC66)
 
 func greenFade(depth, total int) gotui.Color {
 	ratio := float64(depth) / float64(total)
@@ -1110,14 +1110,18 @@ func (v *matrixVis) render() {
 	theme := v.d.ui.Theme()
 
 	// --- Manage dense rain drops ---
-	for len(v.drops) < w {
+	targetDrops := w * 2
+	for len(v.drops) < targetDrops {
 		v.drops = append(v.drops, drop{
-			col:   len(v.drops),
+			col:   rand.Intn(w),
 			y:     -rand.Float64() * float64(h*3),
 			speed: 0.4 + rand.Float64()*1.2,
 			len:   5 + rand.Intn(20),
 			chars: nil,
 		})
+	}
+	for len(v.drops) > targetDrops {
+		v.drops = v.drops[:len(v.drops)-1]
 	}
 
 	// Spawn new chars at head of each drop
@@ -1246,7 +1250,7 @@ func (v *matrixVis) render() {
 			}
 
 			// Sparse background chars (ambient noise)
-			if rand.Float64() < 0.015 {
+			if rand.Float64() < 0.06 {
 				buf = append(buf, v.panel.Styled(greenDarkest, string(randomGlyph()))...)
 			} else {
 				buf = append(buf, ' ')
