@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -79,6 +81,7 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 			{Name: "export", Description: "Export a bot archive <bot> [path]", Handler: func(args string) { d.cmdExport(strings.TrimSpace(args)) }},
 			{Name: "workspace", Description: "Manage workspaces: list|add|remove", Handler: func(args string) { d.cmdWorkspace(strings.TrimSpace(args)) }},
 			{Name: "theme", Description: "Switch colour theme", Args: themeArgs, Handler: func(args string) { d.cmdTheme(strings.TrimSpace(args)) }},
+			{Name: "visualise", Description: "Matrix-style swarm visualisation", Handler: func(_ string) { d.cmdVisualise() }},
 			{Name: "exit", Description: "Exit the TUI", Handler: func(_ string) { d.ui.Exit() }},
 		},
 	})
@@ -970,6 +973,535 @@ func (d *Dashboard) cmdTheme(name string) {
 	d.showInfo(fmt.Sprintf("theme: %s", name))
 }
 
+func (d *Dashboard) cmdVisualise() {
+	d.mu.Lock()
+	if d.logCancel != nil {
+		d.logCancel()
+		d.logCancel = nil
+	}
+	d.selectedBot = ""
+	ctx, cancel := context.WithCancel(d.ui.Context())
+	d.logCancel = cancel
+	d.mu.Unlock()
+
+	main := d.ui.Panel("main")
+	main.Clear()
+	main.SetTitle("SWARM — /select to exit")
+
+	v := &matrixVis{
+		d:       d,
+		panel:   main,
+		drops:   make([]drop, 0),
+		pending: make(map[string]bool),
+	}
+	go v.run(ctx)
+}
+
+var matrixGlyphs = []rune(
+	"ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍ" +
+		"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ" +
+		"∀∂∃∅∆∇∈∉∋∑∏∛∜⋅√∞∠∧∨∩∪∫∴∝≢≤≥⊂⊃⊆⊇")
+
+type matrixVis struct {
+	d          *Dashboard
+	panel      *gotui.Panel
+	drops      []drop
+	frame      int
+	pendingMu  sync.Mutex
+	pending    map[string]bool
+}
+
+type drop struct {
+	col   int
+	y     float64
+	speed float64
+	len   int
+	chars []rune
+}
+
+type botNode struct {
+	name    string
+	status  string
+	ticks   int64
+	x, y    int
+	parent  string
+	leader  bool
+	stale   bool
+	avatar  []string
+	dir     string
+}
+
+// Green brightness gradient from brightest to darkest
+var greenBright = gotui.Color(0x00FF41)
+var greenMid = gotui.Color(0x00CC33)
+var greenDim = gotui.Color(0x009922)
+var greenDark = gotui.Color(0x005511)
+var greenDarkest = gotui.Color(0x003308)
+
+func greenFade(depth, total int) gotui.Color {
+	ratio := float64(depth) / float64(total)
+	switch {
+	case ratio < 0.1:
+		return 0xFFFFFF // white head
+	case ratio < 0.2:
+		return greenBright
+	case ratio < 0.35:
+		return greenMid
+	case ratio < 0.55:
+		return greenDim
+	case ratio < 0.75:
+		return greenDark
+	default:
+		return greenDarkest
+	}
+}
+
+func (v *matrixVis) triggerAvatar(name, goal string) {
+	v.pendingMu.Lock()
+	if v.pending[name] {
+		v.pendingMu.Unlock()
+		return
+	}
+	v.pending[name] = true
+	v.pendingMu.Unlock()
+
+	v.d.generateAvatar(name, goal)
+}
+
+func (v *matrixVis) run(ctx context.Context) {
+	ticker := time.NewTicker(67 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			v.render()
+			v.frame++
+		}
+	}
+}
+
+func (v *matrixVis) render() {
+	w, h := v.panel.Size()
+	if w < 10 || h < 5 {
+		return
+	}
+
+	theme := v.d.ui.Theme()
+
+	// --- Manage dense rain drops ---
+	for len(v.drops) < w {
+		v.drops = append(v.drops, drop{
+			col:   len(v.drops),
+			y:     -rand.Float64() * float64(h*3),
+			speed: 0.4 + rand.Float64()*1.2,
+			len:   5 + rand.Intn(20),
+			chars: nil,
+		})
+	}
+
+	// Spawn new chars at head of each drop
+	for i := range v.drops {
+		d := &v.drops[i]
+		d.y += d.speed
+
+		// Randomly mutate existing chars
+		if len(d.chars) > 0 && rand.Float64() < 0.1 {
+			idx := rand.Intn(len(d.chars))
+			d.chars[idx] = randomGlyph()
+		}
+
+		// Add new char at head
+		d.chars = append(d.chars, randomGlyph())
+		if len(d.chars) > d.len {
+			d.chars = d.chars[len(d.chars)-d.len:]
+		}
+
+		// Respawn if fully off screen
+		if d.y-float64(len(d.chars)) > float64(h) {
+			d.y = -rand.Float64() * 20
+			d.speed = 0.4 + rand.Float64()*1.2
+			d.len = 5 + rand.Intn(20)
+			d.chars = d.chars[:0]
+		}
+	}
+
+	// --- Bot nodes ---
+	bots, _ := v.d.mgr.List()
+	n := len(bots)
+	nodes := make([]botNode, 0, n)
+	for i, b := range bots {
+		angle := float64(i)/float64(max(n, 1))*2*math.Pi + float64(v.frame)*0.006
+		radius := float64(min(h, w)) * 0.25
+		cx, cy := float64(w)/2, float64(h)/2
+		x := int(cx + radius*math.Cos(angle))
+		y := int(cy + radius*math.Sin(angle)*0.5)
+		if x < 4 {
+			x = 4
+		}
+		if x >= w-4 {
+			x = w - 5
+		}
+		if y < 2 {
+			y = 2
+		}
+		if y >= h-2 {
+			y = h - 3
+		}
+		avatar := loadAvatar(b.Dir)
+		if avatar == nil {
+			v.triggerAvatar(b.Config.Name, b.Config.Goal)
+		}
+		nodes = append(nodes, botNode{
+			name:   b.Config.Name,
+			status: b.State.Status,
+			ticks:  b.State.TicksAlive(),
+			x:      x,
+			y:      y,
+			parent: b.Config.Parent,
+			leader: b.State.IsLeader,
+			stale:  b.IsStale(staleThreshold()),
+			avatar: avatar,
+			dir:    b.Dir,
+		})
+	}
+
+	// --- Build output ---
+	// Render row by row to avoid SetContent overhead with per-char styling
+	var sb strings.Builder
+	for row := 0; row < h; row++ {
+		buf := make([]byte, 0, w*12)
+		for col := 0; col < w; col++ {
+			// Check if this cell is a bot node area
+			if ch, color, ok := v.botCell(col, row, w, h, nodes, theme); ok {
+				buf = append(buf, v.panel.Styled(color, string(ch))...)
+				continue
+			}
+
+			// Matrix rain character
+			if ch, color, ok := v.rainCell(col, row); ok {
+				buf = append(buf, v.panel.Styled(color, string(ch))...)
+				continue
+			}
+
+			// Sparse background chars (ambient noise)
+			if rand.Float64() < 0.015 {
+				buf = append(buf, v.panel.Styled(greenDarkest, string(randomGlyph()))...)
+			} else {
+				buf = append(buf, ' ')
+			}
+		}
+		sb.Write(buf)
+		if row < h-1 {
+			sb.WriteByte('\n')
+		}
+	}
+
+	v.panel.SetContent(sb.String())
+}
+
+func (v *matrixVis) rainCell(col, row int) (rune, gotui.Color, bool) {
+	if col >= len(v.drops) {
+		return 0, 0, false
+	}
+	d := &v.drops[col]
+	headY := int(d.y)
+	tailY := headY - len(d.chars)
+	if row > headY || row <= tailY {
+		return 0, 0, false
+	}
+	idx := len(d.chars) - 1 - (headY - row)
+	if idx < 0 || idx >= len(d.chars) {
+		return 0, 0, false
+	}
+	return d.chars[idx], greenFade(headY-row, len(d.chars)), true
+}
+
+func (v *matrixVis) botCell(col, row, w, h int, nodes []botNode, theme *gotui.Theme) (rune, gotui.Color, bool) {
+	for i := range nodes {
+		nd := &nodes[i]
+		dx := col - nd.x
+		dy := row - nd.y
+
+		if len(nd.avatar) >= 5 {
+			avatarH := len(nd.avatar)
+			halfW := len(nd.avatar[0]) / 2
+			nameOffset := 2
+			if nd.leader {
+				nameOffset = 3
+			}
+			avatarTop := -nameOffset - avatarH
+			avatarRow := dy - avatarTop
+			if avatarRow >= 0 && avatarRow < avatarH {
+				if dx >= -halfW && dx <= halfW {
+					line := nd.avatar[avatarRow]
+					charIdx := dx + halfW
+					if charIdx >= 0 && charIdx < len(line) {
+						b := line[charIdx]
+						if b != '0' {
+							ch := avatarGlyph(nd.name, avatarRow, charIdx)
+							return ch, brightnessColor(b), true
+						}
+					}
+				}
+			}
+		}
+
+		// Name row (y-1)
+		nameRunes := []rune(nd.name)
+		if dy == -1 && dx >= -len(nameRunes)/2 && dx < (len(nameRunes)+1)/2 {
+			idx := dx + len(nameRunes)/2
+			if idx >= 0 && idx < len(nameRunes) {
+				return nameRunes[idx], greenBright, true
+			}
+		}
+
+		// Node center
+		if dx == 0 && dy == 0 {
+			pulse := v.frame % 4
+			switch {
+			case nd.stale:
+				return '!', theme.Error, true
+			case nd.status == bot.StatusRunning:
+				return rune("◈◆◈◇"[pulse]), greenBright, true
+			case nd.status == bot.StatusStarting:
+				return '◉', greenMid, true
+			case nd.status == bot.StatusKilled:
+				return '✕', theme.Error, true
+			default:
+				return '○', greenDark, true
+			}
+		}
+
+		// Ticks bar (y+1)
+		if nd.ticks > 0 && dy == 1 {
+			barLen := (int(nd.ticks) % 6) + 3
+			startX := -barLen / 2
+			if dx >= startX && dx < startX+barLen {
+				bars := "▁▂▃▅▆▇█"
+				return rune(bars[(dx-startX+3)%len(bars)]), greenMid, true
+			}
+		}
+
+		// Leader star
+		if nd.leader && dy == -2 && dx == 0 {
+			return '★', theme.Error, true
+		}
+
+		// Aura: brighten rain near running bots
+		if dx*dx+dy*dy <= 4 {
+			if nd.status == bot.StatusRunning {
+				return randomGlyph(), greenMid, true
+			}
+		}
+	}
+
+	// Connection lines between parent-child
+	for i := range nodes {
+		if nodes[i].parent == "" {
+			continue
+		}
+		pi := -1
+		for j := range nodes {
+			if nodes[j].name == nodes[i].parent {
+				pi = j
+				break
+			}
+		}
+		if pi < 0 {
+			continue
+		}
+		if onLine(col, row, nodes[pi].x, nodes[pi].y, nodes[i].x, nodes[i].y) {
+			ch := rune('·')
+			if (col+row+v.frame)%5 == 0 {
+				ch = randomGlyph()
+			}
+			return ch, greenDark, true
+		}
+	}
+
+	return 0, 0, false
+}
+
+func onLine(px, py, x1, y1, x2, y2 int) bool {
+	dx, dy := x2-x1, y2-y1
+	len := abs(dx) + abs(dy)
+	if len == 0 {
+		return false
+	}
+	for s := 0; s <= len; s++ {
+		if px == x1+dx*s/len && py == y1+dy*s/len {
+			return true
+		}
+	}
+	return false
+}
+
+func randomGlyph() rune {
+	return matrixGlyphs[rand.Intn(len(matrixGlyphs))]
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (d *Dashboard) logAvatarErr(bot, format string, args ...any) {
+	msg := fmt.Sprintf("avatar "+format, args...)
+	d.log.Error(msg, "bot", bot)
+	logDir := filepath.Join(filepath.Dir(d.mgr.BotsDir), ".praxis")
+	os.MkdirAll(logDir, 0o755)
+	f, err := os.OpenFile(filepath.Join(logDir, "avatar.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err == nil {
+		fmt.Fprintf(f, "%s [%s] %s\n", time.Now().Format(time.RFC3339), bot, msg)
+		f.Close()
+	}
+}
+
+func (d *Dashboard) generateAvatar(name, goal string) {
+	avatarPath := filepath.Join(d.mgr.BotDir(name), "avatar.txt")
+	if _, err := os.Stat(avatarPath); err == nil {
+		return
+	}
+
+	mask := avatarMasks[rand.Intn(len(avatarMasks))]
+	data := strings.Join(mask.rows, "\n") + "\n"
+	if err := os.WriteFile(avatarPath, []byte(data), 0o644); err != nil {
+		d.logAvatarErr(name, "write failed: %v", err)
+	}
+}
+
+// brightness masks: 0=invisible, 1=dim outline, 2=fill, 3=bright, 4=highlight
+// all masks are 11 chars wide, symmetric, and 8-11 lines tall.
+var avatarMasks = []struct {
+	name string
+	rows []string
+}{
+	{"robot", []string{
+		"00000400000",
+		"00002020000",
+		"00122222100",
+		"01222222210",
+		"12222222221",
+		"12244244221",
+		"12222222221",
+		"12234443221",
+		"01222222210",
+		"00122222100",
+		"00010001000",
+	}},
+	{"face", []string{
+		"00233333200",
+		"01333333100",
+		"12322222321",
+		"12240204221",
+		"12222322221",
+		"12234443221",
+		"01322222310",
+		"00111111100",
+		"00010001000",
+	}},
+	{"alien", []string{
+		"00122222100",
+		"01233333210",
+		"12333333321",
+		"12244344221",
+		"02333333320",
+		"01233233210",
+		"00122222100",
+		"00011011000",
+	}},
+	{"helmet", []string{
+		"00000300000",
+		"00012321000",
+		"00123332100",
+		"01233333210",
+		"12344444321",
+		"12344244321",
+		"01233333210",
+		"00123321000",
+		"00012221000",
+		"00010001000",
+	}},
+	{"skull", []string{
+		"00123321000",
+		"01333333100",
+		"13333333310",
+		"13443344310",
+		"13333333310",
+		"13344433310",
+		"01333333100",
+		"00123431000",
+		"00011111000",
+		"00010001000",
+	}},
+	{"cyborg", []string{
+		"00012321000",
+		"00123321000",
+		"01233332100",
+		"12444444210",
+		"13444444310",
+		"12434434210",
+		"12333333210",
+		"01234321000",
+		"00123321000",
+		"00010001000",
+	}},
+}
+
+func avatarGlyph(name string, row, col int) rune {
+	h := uint32(0)
+	for _, c := range name {
+		h = h*31 + uint32(c)
+	}
+	h += uint32(row)*17 + uint32(col)*13
+	return matrixGlyphs[int(h)%len(matrixGlyphs)]
+}
+
+func brightnessColor(b byte) gotui.Color {
+	switch b {
+	case '1':
+		return greenDarkest
+	case '2':
+		return greenDark
+	case '3':
+		return greenDim
+	case '4':
+		return greenBright
+	default:
+		return greenMid
+	}
+}
+
+func loadAvatar(botDir string) []string {
+	data, err := os.ReadFile(filepath.Join(botDir, "avatar.txt"))
+	if err != nil {
+		return nil
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		l = strings.TrimRight(l, "\r ")
+		if l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) >= 5 {
+		return lines
+	}
+	return nil
+}
+
 func (d *Dashboard) cmdWorkspace(args string) {
 	parts := strings.Fields(args)
 	if len(parts) == 0 {
@@ -1275,4 +1807,11 @@ func writeJSON(path string, v interface{}) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
