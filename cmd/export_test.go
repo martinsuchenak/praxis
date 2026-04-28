@@ -97,16 +97,29 @@ func TestImportBotMissingConfig(t *testing.T) {
 	botsDir := filepath.Join(root, "bots")
 	dir := t.TempDir()
 	archivePath := filepath.Join(dir, "noconfig.tar.gz")
-	f, _ := os.Create(archivePath)
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	gw := gzip.NewWriter(f)
 	tw := tar.NewWriter(gw)
-	tw.WriteHeader(&tar.Header{Name: "bot/brain.md", Size: 4, Mode: 0644})
-	tw.Write([]byte("test"))
-	tw.Close()
-	gw.Close()
-	f.Close()
+	if err := tw.WriteHeader(&tar.Header{Name: "bot/brain.md", Size: 4, Mode: 0644}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("test")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := importBot(archivePath, botsDir, "", nil)
+	_, err = importBot(archivePath, botsDir, "", nil)
 	if err == nil {
 		t.Fatal("expected error for missing config")
 	}
@@ -156,10 +169,13 @@ func createTestArchive(t *testing.T, botName, goal, workspace string, extraFiles
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
-
 	gw := gzip.NewWriter(f)
 	tw := tar.NewWriter(gw)
+	defer func() {
+		_ = tw.Close()
+		_ = gw.Close()
+		_ = f.Close()
+	}()
 
 	cfg := &bot.BotConfig{
 		Name:      botName,
@@ -170,21 +186,24 @@ func createTestArchive(t *testing.T, botName, goal, workspace string, extraFiles
 	cfgData, _ := json.MarshalIndent(cfg, "", "  ")
 	writeTarFile(t, tw, "bot/config.json", cfgData)
 
-	tw.WriteHeader(&tar.Header{Name: "bot/", Typeflag: tar.TypeDir, Mode: 0755})
-	tw.WriteHeader(&tar.Header{Name: "bot/entities/", Typeflag: tar.TypeDir, Mode: 0755})
+	if err := tw.WriteHeader(&tar.Header{Name: "bot/", Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "bot/entities/", Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
+		t.Fatal(err)
+	}
 
 	for fname, content := range extraFiles {
 		writeTarFile(t, tw, "bot/"+fname, []byte(content))
 	}
-
-	tw.Close()
-	gw.Close()
 	return archivePath
 }
 
 func writeTarFile(t *testing.T, tw *tar.Writer, name string, data []byte) {
 	t.Helper()
-	tw.WriteHeader(&tar.Header{Name: name, Size: int64(len(data)), Mode: 0644})
+	if err := tw.WriteHeader(&tar.Header{Name: name, Size: int64(len(data)), Mode: 0644}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tw.Write(data); err != nil {
 		t.Fatal(err)
 	}

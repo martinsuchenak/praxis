@@ -17,7 +17,7 @@ func Export(b *Bot, outPath string) error {
 	if err != nil {
 		return fmt.Errorf("create archive: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	gw := gzip.NewWriter(f)
 	tw := tar.NewWriter(gw)
@@ -110,7 +110,7 @@ func addFileToTar(tw *tar.Writer, src, archiveName string, mode os.FileMode) err
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {

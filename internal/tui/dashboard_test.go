@@ -354,7 +354,9 @@ func TestLoadAvatar(t *testing.T) {
 
 	t.Run("too_few_lines", func(t *testing.T) {
 		path := filepath.Join(dir, "avatar.txt")
-		os.WriteFile(path, []byte("000000000000000\n000000000000000\n"), 0o644)
+		if err := os.WriteFile(path, []byte("000000000000000\n000000000000000\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		result := loadAvatar(dir)
 		if result != nil {
 			t.Error("expected nil for < 5 lines")
@@ -367,7 +369,9 @@ func TestLoadAvatar(t *testing.T) {
 			lines[i] = strings.Repeat("1", maskW)
 		}
 		path := filepath.Join(dir, "avatar.txt")
-		os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		result := loadAvatar(dir)
 		if len(result) != 8 {
 			t.Fatalf("expected 8 lines, got %d", len(result))
@@ -385,7 +389,9 @@ func TestLoadAvatar(t *testing.T) {
 			lines[i] = strings.Repeat("2", maskW) + "  "
 		}
 		path := filepath.Join(dir, "avatar.txt")
-		os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 		result := loadAvatar(dir)
 		for i, line := range result {
 			if len(line) != maskW {
@@ -400,7 +406,9 @@ func TestLoadAvatarRoundTrip(t *testing.T) {
 	spec := faceSpecs[0]
 	lines := spec.render()
 	data := strings.Join(lines, "\n") + "\n"
-	os.WriteFile(filepath.Join(dir, "avatar.txt"), []byte(data), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "avatar.txt"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	loaded := loadAvatar(dir)
 	if len(loaded) != len(lines) {

@@ -305,8 +305,12 @@ while True:
 	}
 
 	pool := testRunnerPool(t, mgr)
-	pool.Start("sa1")
-	pool.Start("sa2")
+	if err := pool.Start("sa1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Start("sa2"); err != nil {
+		t.Fatal(err)
+	}
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -346,8 +350,12 @@ while True:
 	}
 
 	pool := testRunnerPool(t, mgr)
-	pool.Start("ka1")
-	pool.Start("ka2")
+	if err := pool.Start("ka1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.Start("ka2"); err != nil {
+		t.Fatal(err)
+	}
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

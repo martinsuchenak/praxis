@@ -39,6 +39,10 @@ type Dashboard struct {
 	logCancel   context.CancelFunc
 	logOffset   int64
 	vizActive   bool
+
+	quitMu     sync.Mutex
+	quitPending bool
+	quitCancel  context.CancelFunc
 }
 
 func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.Sandbox, log logger.Logger) *Dashboard {
@@ -62,6 +66,7 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 		AssistantLabel: "bot",
 		OnSubmit:       d.onSubmit,
 		OnFocusChange:  func(_ *gotui.Panel) {},
+		OnInterrupt:    d.handleInterrupt,
 		Commands: []*gotui.Command{
 			{Name: "select", Description: "Switch log view to a bot", Handler: func(args string) { d.cmdSelect(strings.TrimSpace(args)) }},
 			{Name: "list", Description: "List all bots with details", Handler: func(_ string) { d.cmdList() }},
@@ -296,36 +301,34 @@ func (d *Dashboard) refreshDetailPanel() {
 	sort.Strings(modelIDs)
 
 	if len(modelIDs) > 0 {
-		sb.WriteString(d.detailPanel.Styled(theme.Primary, "━━━ LLM models ━━━") + "\n\n")
+		sb.WriteString(d.detailPanel.Styled(theme.Primary, "━━━ models ━━━") + "\n\n")
 		for _, id := range modelIDs {
 			mi := models[id]
 			display := id
 			if mi.Label != "" {
-				display = mi.Label + " (" + id + ")"
+				display = mi.Label
 			}
-			fmt.Fprintf(&sb, "  %s\n", d.detailPanel.Styled(theme.Text, display))
+			fmt.Fprintf(&sb, " %s\n", d.detailPanel.Styled(theme.Text, display))
 
-			parts := []string{}
-			if mi.Concurrency > 0 {
-				parts = append(parts, fmt.Sprintf("limit: %d", mi.Concurrency))
-			}
-			if len(mi.Bots) > 0 {
-				running := 0
-				for _, n := range mi.Bots {
-					if d.pool.IsRunning(n) {
-						running++
-					}
+			running := 0
+			for _, n := range mi.Bots {
+				if d.pool.IsRunning(n) {
+					running++
 				}
-				parts = append(parts, fmt.Sprintf("bots: %d  running: %d", len(mi.Bots), running))
+			}
+
+			var stats string
+			if mi.Concurrency > 0 {
+				stats = fmt.Sprintf("bots:%d run:%d max:%d", len(mi.Bots), running, mi.Concurrency)
 			} else {
-				parts = append(parts, "bots: 0")
+				stats = fmt.Sprintf("bots:%d run:%d", len(mi.Bots), running)
 			}
 			sanitized := sanitizeModel(id)
 			queueDir := filepath.Join(d.mgr.LocksDir, sanitized)
 			if queueCount := countQueueTickets(queueDir); queueCount > 0 {
-				parts = append(parts, d.detailPanel.Styled(theme.Error, fmt.Sprintf("queued: %d", queueCount)))
+				stats += " " + d.detailPanel.Styled(theme.Error, fmt.Sprintf("q:%d", queueCount))
 			}
-			fmt.Fprintf(&sb, "    %s\n", strings.Join(parts, "  "))
+			fmt.Fprintf(&sb, "   %s\n", stats)
 		}
 	}
 
@@ -374,15 +377,16 @@ func (d *Dashboard) refreshDetailPanel() {
 	if len(wsMap) > 0 {
 		sb.WriteString("\n" + d.detailPanel.Styled(theme.Primary, "━━━ workspaces ━━━") + "\n\n")
 		for name, info := range wsMap {
-			fmt.Fprintf(&sb, "  %s\n", d.detailPanel.Styled(theme.Text, name))
-			if info.Path != "" {
-				fmt.Fprintf(&sb, "    path: %s\n", info.Path)
+			fmt.Fprintf(&sb, " %s\n", d.detailPanel.Styled(theme.Text, name))
+			parts := []string{}
+			if len(info.Bots) > 0 {
+				parts = append(parts, fmt.Sprintf("bots:%d", len(info.Bots)))
 			}
 			if info.Scope != "" {
-				fmt.Fprintf(&sb, "    scope: %s\n", info.Scope)
+				parts = append(parts, info.Scope)
 			}
-			if len(info.Bots) > 0 {
-				fmt.Fprintf(&sb, "    bots: %d\n", len(info.Bots))
+			if len(parts) > 0 {
+				fmt.Fprintf(&sb, "   %s\n", strings.Join(parts, " "))
 			}
 		}
 	}
@@ -445,7 +449,66 @@ func (d *Dashboard) tailLog(ctx context.Context, name string, p *gotui.Panel) {
 	}
 }
 
+func (d *Dashboard) handleInterrupt() {
+	d.quitMu.Lock()
+	defer d.quitMu.Unlock()
+
+	if d.quitPending {
+		d.quitPending = false
+		if d.quitCancel != nil {
+			d.quitCancel()
+		}
+		d.ui.Exit()
+		return
+	}
+
+	d.quitPending = true
+
+	bots, _ := d.mgr.List()
+	running := 0
+	for _, b := range bots {
+		if b.State.Status == bot.StatusRunning || b.State.Status == bot.StatusStarting {
+			running++
+		}
+	}
+
+	msg := "Press Ctrl+C again within 3s to quit."
+	if running > 0 {
+		msg = fmt.Sprintf("%d bot(s) still running. Press Ctrl+C again within 3s to quit, or keep typing to cancel.", running)
+	}
+	d.ui.AddMessage(gotui.RoleSystem, msg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	d.quitCancel = cancel
+
+	go func() {
+		select {
+		case <-time.After(3 * time.Second):
+			d.quitMu.Lock()
+			if d.quitPending {
+				d.quitPending = false
+				d.ui.AddMessage(gotui.RoleSystem, "Quit cancelled.")
+			}
+			d.quitMu.Unlock()
+		case <-ctx.Done():
+		}
+	}()
+}
+
+func (d *Dashboard) clearQuitPending() {
+	d.quitMu.Lock()
+	defer d.quitMu.Unlock()
+	if d.quitPending {
+		d.quitPending = false
+		if d.quitCancel != nil {
+			d.quitCancel()
+		}
+	}
+}
+
 func (d *Dashboard) onSubmit(text string) {
+	d.clearQuitPending()
+
 	d.mu.Lock()
 	sel := d.selectedBot
 	d.mu.Unlock()
@@ -614,7 +677,7 @@ func (d *Dashboard) cmdStopAll() {
 		}
 	}
 	for _, name := range names {
-		go d.pool.Stop(name)
+		go func(n string) { _ = d.pool.Stop(n) }(name)
 	}
 	d.showInfo(fmt.Sprintf("stopping %d bots", len(names)))
 }
@@ -649,7 +712,7 @@ func (d *Dashboard) cmdKillAll() {
 		}
 	}
 	for _, name := range names {
-		go d.pool.Kill(name)
+		go func(n string) { _ = d.pool.Kill(n) }(name)
 	}
 	d.showInfo(fmt.Sprintf("killing %d bots", len(names)))
 }
@@ -691,7 +754,7 @@ func (d *Dashboard) cmdRestartStale() {
 	}
 	for _, name := range names {
 		go func(n string) {
-			go d.pool.Kill(n)
+			_ = d.pool.Kill(n)
 			time.Sleep(300 * time.Millisecond)
 			_ = d.pool.Start(n)
 		}(name)
@@ -713,9 +776,8 @@ func (d *Dashboard) cmdRemove(name string) {
 		return
 	}
 	d.mgr.RemoveLocks(name)
-	go d.pool.Kill(name)
+	go func() { _ = d.pool.Kill(name) }()
 	if err := d.mgr.Delete(name); err != nil {
-		d.showInfo(fmt.Sprintf("remove %s: %v", name, err))
 		return
 	}
 	d.mu.Lock()
@@ -846,7 +908,7 @@ func (d *Dashboard) cmdInfo(name string) {
 
 func (d *Dashboard) cmdLogs(args string) {
 	var name string
-	var lines int = 40
+	lines := 40
 	if args != "" {
 		parts := strings.Fields(args)
 		if len(parts) >= 1 {
@@ -1486,11 +1548,11 @@ func (d *Dashboard) logAvatarErr(bot, format string, args ...any) {
 	msg := fmt.Sprintf("avatar "+format, args...)
 	d.log.Error(msg, "bot", bot)
 	logDir := filepath.Join(filepath.Dir(d.mgr.BotsDir), ".praxis")
-	os.MkdirAll(logDir, 0o755)
+	_ = os.MkdirAll(logDir, 0o755)
 	f, err := os.OpenFile(filepath.Join(logDir, "avatar.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err == nil {
-		fmt.Fprintf(f, "%s [%s] %s\n", time.Now().Format(time.RFC3339), bot, msg)
-		f.Close()
+		_, _ = fmt.Fprintf(f, "%s [%s] %s\n", time.Now().Format(time.RFC3339), bot, msg)
+		_ = f.Close()
 	}
 }
 
@@ -1772,11 +1834,6 @@ func (d *Dashboard) cmdWorkspace(args string) {
 }
 
 func (d *Dashboard) wsList() {
-	type wsEntry struct {
-		Path         string `json:"path"`
-		GossipSecret string `json:"gossip_secret,omitempty"`
-		DefaultScope string `json:"default_scope,omitempty"`
-	}
 	projectDir := filepath.Dir(d.mgr.BotsDir)
 	data, err := os.ReadFile(filepath.Join(projectDir, "workspaces.json"))
 	if err != nil {
@@ -1971,7 +2028,7 @@ func readLastN(path string, n int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var lines []string
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)

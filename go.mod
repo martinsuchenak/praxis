@@ -3,7 +3,7 @@ module praxis
 go 1.26.2
 
 require (
-	github.com/paularlott/cli v0.8.3
+	github.com/paularlott/cli v0.8.4
 	github.com/paularlott/gossip v0.12.4
 	github.com/paularlott/logger v0.3.0
 	github.com/paularlott/scriptling v0.6.0

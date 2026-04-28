@@ -41,7 +41,9 @@ func TestResolveWorkspaceMissingFile(t *testing.T) {
 
 func TestResolveWorkspaceInvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte("{bad json"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte("{bad json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	p, _, _ := resolveWorkspace(dir, "myapp")
 	if p != "" {
 		t.Error("expected empty for invalid JSON")
@@ -50,7 +52,9 @@ func TestResolveWorkspaceInvalidJSON(t *testing.T) {
 
 func TestResolveWorkspaceNotFound(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{"other":"/path"}`), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{"other":"/path"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	p, _, _ := resolveWorkspace(dir, "myapp")
 	if p != "" {
 		t.Error("expected empty for missing workspace name")
@@ -59,8 +63,10 @@ func TestResolveWorkspaceNotFound(t *testing.T) {
 
 func TestResolveWorkspaceString(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "workspaces.json"),
-		[]byte(`{"myapp":"/home/user/projects/myapp"}`), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"),
+		[]byte(`{"myapp":"/home/user/projects/myapp"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	p, s, sc := resolveWorkspace(dir, "myapp")
 	if p != "/home/user/projects/myapp" {
 		t.Errorf("path = %q", p)
@@ -75,13 +81,15 @@ func TestResolveWorkspaceString(t *testing.T) {
 
 func TestResolveWorkspaceObject(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{
+	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{
 		"myapp": {
 			"path": "/home/user/projects/myapp",
 			"gossip_secret": "s3cr3t",
 			"default_scope": "isolated"
 		}
-	}`), 0o644)
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	p, s, sc := resolveWorkspace(dir, "myapp")
 	if p != "/home/user/projects/myapp" {
 		t.Errorf("path = %q", p)
@@ -96,11 +104,13 @@ func TestResolveWorkspaceObject(t *testing.T) {
 
 func TestResolveWorkspaceObjectPartial(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{
+	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{
 		"minimal": {
 			"path": "/tmp/min"
 		}
-	}`), 0o644)
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	p, s, sc := resolveWorkspace(dir, "minimal")
 	if p != "/tmp/min" {
 		t.Errorf("path = %q", p)

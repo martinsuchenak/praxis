@@ -239,17 +239,6 @@ func (rp *RunnerPool) IsRunning(botID string) bool {
 	return ok && r.isRunning()
 }
 
-func (rp *RunnerPool) signal(botID, status string) error {
-	rp.mu.Lock()
-	r, ok := rp.runners[botID]
-	rp.mu.Unlock()
-	if !ok || !r.isRunning() {
-		return fmt.Errorf("bot %q is not running", botID)
-	}
-	_ = rp.mgr.SetStatus(botID, status)
-	return nil
-}
-
 // loadModelsJSON reads models.json from the project root and returns its
 // contents as a slice of maps, or nil if the file is absent or malformed.
 func loadModelsJSON(projectDir string) []interface{} {

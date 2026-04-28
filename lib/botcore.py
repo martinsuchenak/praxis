@@ -562,6 +562,20 @@ def _on_gossip_msg(msg):
             "ts": int(time.time()),
         })
         _log("INFO", "<- message  from=" + sender_id + "  content=" + _trunc(content, 100))
+        _gossip_send(msg.get("sender", {}).get("id", ""), {
+            "type": "ack",
+            "from": BOT_ID,
+        })
+        return None
+
+    if msg_type == "ack":
+        _inbox.put({
+            "from": sender_id,
+            "content": "message received, will respond when ready",
+            "ts": int(time.time()),
+            "type": "ack",
+        })
+        _log("INFO", "<- ack  from=" + sender_id)
         return None
 
     if msg_type == "relayed_message":
@@ -1585,6 +1599,8 @@ while True:
                 mtype = m.get("type", "message")
                 if mtype == "task_complete":
                     tick_msg += "From " + sender + " [task_complete]: task_id=" + m.get("task_id", "") + " result=" + content + "\n"
+                elif mtype == "ack":
+                    tick_msg += "From " + sender + " [delivered]: your message was received. They will respond on their next tick.\n"
                 else:
                     tick_msg += "From " + sender + ": " + content + "\n"
             tick_msg += "\nWhat is your next action?"
