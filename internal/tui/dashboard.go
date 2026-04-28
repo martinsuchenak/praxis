@@ -38,6 +38,7 @@ type Dashboard struct {
 	selectedBot string
 	logCancel   context.CancelFunc
 	logOffset   int64
+	vizActive   bool
 }
 
 func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.Sandbox, log logger.Logger) *Dashboard {
@@ -396,6 +397,7 @@ func (d *Dashboard) selectBot(ctx context.Context, name string) {
 	}
 	d.selectedBot = name
 	d.logOffset = 0
+	d.vizActive = false
 	logCtx, cancel := context.WithCancel(ctx)
 	d.logCancel = cancel
 	d.mu.Unlock()
@@ -555,7 +557,9 @@ func (d *Dashboard) cmdStart(name string) {
 		d.showInfo(fmt.Sprintf("start %s: %v", name, err))
 		return
 	}
-	d.selectBot(d.ui.Context(), name)
+	if !d.vizActive {
+		d.selectBot(d.ui.Context(), name)
+	}
 	d.showInfo(fmt.Sprintf("started %s", name))
 }
 
@@ -666,7 +670,9 @@ func (d *Dashboard) cmdRestart(name string) {
 		d.showInfo(fmt.Sprintf("restart %s: %v", name, err))
 		return
 	}
-	d.selectBot(d.ui.Context(), name)
+	if !d.vizActive {
+		d.selectBot(d.ui.Context(), name)
+	}
 	d.showInfo(fmt.Sprintf("restarted %s", name))
 }
 
@@ -926,7 +932,9 @@ func (d *Dashboard) cmdSpawn(args string) {
 		d.showInfo(fmt.Sprintf("spawned %s but start failed: %v", name, err))
 		return
 	}
-	d.selectBot(d.ui.Context(), name)
+	if !d.vizActive {
+		d.selectBot(d.ui.Context(), name)
+	}
 	d.showInfo(fmt.Sprintf("spawned and started %s", name))
 }
 
@@ -980,6 +988,7 @@ func (d *Dashboard) cmdVisualise() {
 		d.logCancel = nil
 	}
 	d.selectedBot = ""
+	d.vizActive = true
 	ctx, cancel := context.WithCancel(d.ui.Context())
 	d.logCancel = cancel
 	d.mu.Unlock()
@@ -1134,21 +1143,21 @@ func (v *matrixVis) render() {
 	nodes := make([]botNode, 0, n)
 	for i, b := range bots {
 		angle := float64(i)/float64(max(n, 1))*2*math.Pi + float64(v.frame)*0.006
-		radius := float64(min(h, w)) * 0.25
+		radius := float64(min(h, w)) * 0.38
 		cx, cy := float64(w)/2, float64(h)/2
 		x := int(cx + radius*math.Cos(angle))
 		y := int(cy + radius*math.Sin(angle)*0.5)
-		if x < 4 {
-			x = 4
+		if x < 8 {
+			x = 8
 		}
-		if x >= w-4 {
-			x = w - 5
+		if x >= w-8 {
+			x = w - 9
 		}
-		if y < 2 {
-			y = 2
+		if y < 6 {
+			y = 6
 		}
-		if y >= h-2 {
-			y = h - 3
+		if y >= h-6 {
+			y = h - 7
 		}
 		avatar := loadAvatar(b.Dir)
 		if avatar == nil {
@@ -1186,6 +1195,12 @@ func (v *matrixVis) render() {
 				continue
 			}
 
+			// Extra rain near bot nodes
+			if ch, color, ok := v.nodeRainCell(col, row, nodes); ok {
+				buf = append(buf, v.panel.Styled(color, string(ch))...)
+				continue
+			}
+
 			// Sparse background chars (ambient noise)
 			if rand.Float64() < 0.015 {
 				buf = append(buf, v.panel.Styled(greenDarkest, string(randomGlyph()))...)
@@ -1219,6 +1234,34 @@ func (v *matrixVis) rainCell(col, row int) (rune, gotui.Color, bool) {
 	return d.chars[idx], greenFade(headY-row, len(d.chars)), true
 }
 
+func (v *matrixVis) nodeRainCell(col, row int, nodes []botNode) (rune, gotui.Color, bool) {
+	for i := range nodes {
+		nd := &nodes[i]
+		dx := col - nd.x
+		if dx < -10 || dx > 10 {
+			continue
+		}
+
+		seed := uint32(i*37+dx*13) + uint32(nd.x*7)
+		tailLen := 5 + int(seed%5)
+		speed := 1 + int(seed%3)
+		period := 25 + int(seed%20)
+
+		head := (int(seed) + v.frame*speed/2) % period
+
+		dist := head - row
+		for dist < 0 {
+			dist += period
+		}
+
+		if dist < tailLen {
+			glyph := matrixGlyphs[int(seed+uint32(v.frame/4+row*3))%len(matrixGlyphs)]
+			return glyph, greenFade(dist, tailLen), true
+		}
+	}
+	return 0, 0, false
+}
+
 func (v *matrixVis) botCell(col, row, w, h int, nodes []botNode, theme *gotui.Theme) (rune, gotui.Color, bool) {
 	for i := range nodes {
 		nd := &nodes[i]
@@ -1241,7 +1284,7 @@ func (v *matrixVis) botCell(col, row, w, h int, nodes []botNode, theme *gotui.Th
 					if charIdx >= 0 && charIdx < len(line) {
 						b := line[charIdx]
 						if b != '0' {
-							ch := avatarGlyph(nd.name, avatarRow, charIdx)
+							ch := avatarGlyph(nd.name, avatarRow, charIdx, v.frame)
 							return ch, brightnessColor(b), true
 						}
 					}
@@ -1375,97 +1418,217 @@ func (d *Dashboard) generateAvatar(name, goal string) {
 		return
 	}
 
-	mask := avatarMasks[rand.Intn(len(avatarMasks))]
-	data := strings.Join(mask.rows, "\n") + "\n"
+	spec := faceSpecs[rand.Intn(len(faceSpecs))]
+	lines := spec.render()
+	data := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(avatarPath, []byte(data), 0o644); err != nil {
 		d.logAvatarErr(name, "write failed: %v", err)
 	}
 }
 
-// brightness masks: 0=invisible, 1=dim outline, 2=fill, 3=bright, 4=highlight
-// all masks are 11 chars wide, symmetric, and 8-11 lines tall.
-var avatarMasks = []struct {
-	name string
-	rows []string
-}{
-	{"robot", []string{
-		"00000400000",
-		"00002020000",
-		"00122222100",
-		"01222222210",
-		"12222222221",
-		"12244244221",
-		"12222222221",
-		"12234443221",
-		"01222222210",
-		"00122222100",
-		"00010001000",
-	}},
-	{"face", []string{
-		"00233333200",
-		"01333333100",
-		"12322222321",
-		"12240204221",
-		"12222322221",
-		"12234443221",
-		"01322222310",
-		"00111111100",
-		"00010001000",
-	}},
-	{"alien", []string{
-		"00122222100",
-		"01233333210",
-		"12333333321",
-		"12244344221",
-		"02333333320",
-		"01233233210",
-		"00122222100",
-		"00011011000",
-	}},
-	{"helmet", []string{
-		"00000300000",
-		"00012321000",
-		"00123332100",
-		"01233333210",
-		"12344444321",
-		"12344244321",
-		"01233333210",
-		"00123321000",
-		"00012221000",
-		"00010001000",
-	}},
-	{"skull", []string{
-		"00123321000",
-		"01333333100",
-		"13333333310",
-		"13443344310",
-		"13333333310",
-		"13344433310",
-		"01333333100",
-		"00123431000",
-		"00011111000",
-		"00010001000",
-	}},
-	{"cyborg", []string{
-		"00012321000",
-		"00123321000",
-		"01233332100",
-		"12444444210",
-		"13444444310",
-		"12434434210",
-		"12333333210",
-		"01234321000",
-		"00123321000",
-		"00010001000",
-	}},
+const maskW = 15
+
+type faceSpec struct {
+	halfWidths   []float64
+	eyeY         int
+	eyeXOff      float64
+	eyeRX, eyeRY float64
+	mouthY       int
+	mouthHW      float64
+	extras       string
 }
 
-func avatarGlyph(name string, row, col int) rune {
+var faceSpecs = []faceSpec{
+	{
+		halfWidths: []float64{4, 5.5, 6.5, 7, 6.5, 5.5, 4, 2},
+		eyeY: 2, eyeXOff: 2.5, eyeRX: 1, eyeRY: 0.8,
+		mouthY: 5, mouthHW: 2,
+	},
+	{
+		halfWidths: []float64{0.5, 5, 6.5, 7, 7, 6.5, 5, 3},
+		eyeY: 3, eyeXOff: 2.5, eyeRX: 1.5, eyeRY: 0.5,
+		mouthY: 5, mouthHW: 3, extras: "antenna",
+	},
+	{
+		halfWidths: []float64{5, 6.5, 7, 6, 5, 3.5, 2, 1},
+		eyeY: 2, eyeXOff: 2.2, eyeRX: 1.5, eyeRY: 1.2,
+		mouthY: 5, mouthHW: 1,
+	},
+	{
+		halfWidths: []float64{3.5, 5.5, 7, 7, 6.5, 5, 3, 1},
+		eyeY: 3, eyeXOff: 2.5, eyeRX: 0.7, eyeRY: 1,
+		mouthY: 5, mouthHW: 0.5, extras: "ears",
+	},
+	{
+		halfWidths: []float64{0.5, 5, 6.5, 7, 7, 6, 4, 2.5},
+		eyeY: 3, eyeXOff: 3, eyeRX: 2, eyeRY: 0.4,
+		mouthY: -1, mouthHW: 0, extras: "visor",
+	},
+	{
+		halfWidths: []float64{4.5, 6, 6.5, 6.5, 6, 4.5, 3, 1.5},
+		eyeY: 2, eyeXOff: 2.2, eyeRX: 1.2, eyeRY: 1,
+		mouthY: 5, mouthHW: 2, extras: "teeth",
+	},
+}
+
+func (s faceSpec) render() []string {
+	cx := float64(maskW / 2)
+	cyF := float64(len(s.halfWidths)) / 2
+	h := len(s.halfWidths)
+
+	maxHW := 0.0
+	for _, w := range s.halfWidths {
+		if w > maxHW {
+			maxHW = w
+		}
+	}
+
+	grid := make([][]byte, h)
+	for y := range grid {
+		grid[y] = make([]byte, maskW)
+		for x := range grid[y] {
+			grid[y][x] = '0'
+		}
+	}
+
+	for y := 0; y < h; y++ {
+		for x := 0; x < maskW; x++ {
+			dx := math.Abs(float64(x) - cx)
+			hw := s.halfWidths[y]
+			if hw > 0 && dx <= hw {
+				sy, sx := y+1, x+1
+				if sy < h && sx < maskW {
+					grid[sy][sx] = '1'
+				}
+			}
+		}
+	}
+
+	for y := 0; y < h; y++ {
+		fy := float64(y)
+		for x := 0; x < maskW; x++ {
+			fx := float64(x)
+			dx := math.Abs(fx - cx)
+
+			hw := s.halfWidths[y]
+			if hw > 0 && dx <= hw {
+				ratio := dx / hw
+				if ratio > 0.85 {
+					grid[y][x] = '1'
+				} else {
+					lx := (fx - cx) / maxHW
+					ly := (fy - cyF) / float64(h)
+					light := -lx*0.6 - ly*0.5
+					if light > 0.25 {
+						grid[y][x] = '3'
+					} else {
+						grid[y][x] = '2'
+					}
+				}
+			}
+
+			if s.eyeRX > 0 {
+				eyF := float64(s.eyeY)
+				for _, sign := range []float64{-1, 1} {
+					ex := cx + sign*s.eyeXOff
+					edx := (fx - ex) / s.eyeRX
+					edy := (fy - eyF) / s.eyeRY
+					ed := edx*edx + edy*edy
+					if ed <= 1.0 {
+						if ed < 0.2 {
+							grid[y][x] = '4'
+						} else {
+							grid[y][x] = '3'
+						}
+					}
+				}
+			}
+
+			if s.mouthHW > 0 && s.mouthY >= 0 && s.mouthY < h {
+				myF := float64(s.mouthY)
+				mdx := (fx - cx) / s.mouthHW
+				mdy := fy - myF
+				if mdx*mdx <= 1.0 && mdy >= -0.45 && mdy <= 0.45 {
+					grid[y][x] = '3'
+				}
+			}
+		}
+	}
+
+	switch s.extras {
+	case "antenna":
+		mid := maskW / 2
+		grid[0][mid] = '4'
+	case "ears":
+		grid[0][2] = '2'
+		grid[0][maskW-3] = '2'
+		grid[1][1] = '1'
+		grid[1][maskW-2] = '1'
+	case "visor":
+		for y := s.eyeY; y <= s.eyeY+int(math.Ceil(s.eyeRY)); y++ {
+			if y >= 0 && y < h {
+				for x := 0; x < maskW; x++ {
+					if grid[y][x] != '0' {
+						grid[y][x] = '4'
+					}
+				}
+			}
+		}
+	case "teeth":
+		if s.mouthY >= 0 && s.mouthY < h {
+			for x := 0; x < maskW; x++ {
+				if grid[s.mouthY][x] == '3' && x%2 == 0 {
+					grid[s.mouthY][x] = '4'
+				}
+			}
+		}
+	}
+
+	glow := make([][]bool, h)
+	for y := range glow {
+		glow[y] = make([]bool, maskW)
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x < maskW; x++ {
+			if grid[y][x] != '0' {
+				for dy := -1; dy <= 1; dy++ {
+					for dx := -1; dx <= 1; dx++ {
+						if dy == 0 && dx == 0 {
+							continue
+						}
+						ny, nx := y+dy, x+dx
+						if ny >= 0 && ny < h && nx >= 0 && nx < maskW && grid[ny][nx] == '0' {
+							glow[ny][nx] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	for y := 0; y < h; y++ {
+		for x := 0; x < maskW; x++ {
+			if glow[y][x] {
+				grid[y][x] = '1'
+			}
+		}
+	}
+
+	lines := make([]string, h)
+	for y := range grid {
+		lines[y] = string(grid[y])
+	}
+	return lines
+}
+
+func avatarGlyph(name string, row, col, frame int) rune {
 	h := uint32(0)
 	for _, c := range name {
 		h = h*31 + uint32(c)
 	}
 	h += uint32(row)*17 + uint32(col)*13
+	phase := h % 13
+	step := uint32((frame + int(phase)) / 5)
+	h += step * 7
 	return matrixGlyphs[int(h)%len(matrixGlyphs)]
 }
 
@@ -1692,6 +1855,10 @@ func (d *Dashboard) resolveWorkspace(name string) (path, gossipSecret, defaultSc
 }
 
 func (d *Dashboard) showInfo(msg string) {
+	if d.vizActive {
+		d.ui.AddMessage(gotui.RoleSystem, "["+msg+"]")
+		return
+	}
 	d.ui.Panel("main").WriteString("[" + msg + "]\n")
 }
 
