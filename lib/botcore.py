@@ -1420,7 +1420,7 @@ def _build_system_prompt():
     prompt += "Each tick, take the next meaningful action toward your goal.\n"
     prompt += "Store knowledge, decisions, and plans as files under entities/ - write them, refine them, use them.\n"
     prompt += "When you need to automate or compute something, write a scriptling script under entities/ and run it.\n"
-    prompt += "When you need more capacity, spawn child bots with specific sub-goals.\n"
+    prompt += "When you need more capacity, spawn child bots with specific sub-goals. Pick a model that suits the child's task — a cheaper model for routine work, a stronger one for complex reasoning.\n"
     prompt += "You decide what to create, write, or delegate. No one tells you what you need.\n\n"
     prompt += "## Persistence\n"
     prompt += "You have three ways to persist information. Each serves a different purpose:\n"
@@ -1444,7 +1444,7 @@ def _build_system_prompt():
     prompt += "## Scriptling\n"
     prompt += "Scriptling is your automation language for run_script. Full syntax reference: read_file(\"entities/scriptling-reference.md\").\n"
     prompt += "Key differences from Python: no async/await, no yield, no type annotations, no open()/eval()/exec(). Regex uses RE2 (no backreferences/lookaround).\n"
-    prompt += "Scripts start with: #!/usr/bin/env scriptling\n\n"
+    prompt += "Scripts start with: #!/usr/bin/env scriptling, scripts extension must be `.py`\n\n"
 
     if brain:
         prompt += "## Your Brain\n" + brain + "\n\n"
@@ -1474,7 +1474,7 @@ def _build_system_prompt():
     if AVAILABLE_MODELS:
         prompt += "## Available Models\n"
         prompt += "You are running on: " + model_name + "\n\n"
-        prompt += "Use `query_model(model, prompt)` for one-shot calls or `model=` in spawn_bot/spawn_hybrid to assign a model to a child.\n\n"
+        prompt += "Use `query_model(model, prompt)` for one-shot calls or `model=` in spawn_bot/spawn_hybrid to assign a model to a child. Choose a model that fits the child's task — don't default to your own model if another is better suited.\n\n"
         for m in AVAILABLE_MODELS:
             prompt += "- **" + m["id"] + "**"
             if m.get("label"):
