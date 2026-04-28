@@ -1038,6 +1038,14 @@ type botNode struct {
 	stale   bool
 	avatar  []string
 	dir     string
+	active  bool
+}
+
+type maskInfo struct {
+	mask   byte
+	node   int
+	avRow  int
+	avCol  int
 }
 
 // Green brightness gradient from brightest to darkest
@@ -1047,19 +1055,20 @@ var greenDim = gotui.Color(0x009922)
 var greenDark = gotui.Color(0x005511)
 var greenDarkest = gotui.Color(0x003308)
 
+var glowEdge = gotui.Color(0x00BB33)
+var glowFill = gotui.Color(0x33FF55)
+var glowFeature = gotui.Color(0x88FF99)
+var glowHighlight = gotui.Color(0xCCFFCC)
+
 func greenFade(depth, total int) gotui.Color {
 	ratio := float64(depth) / float64(total)
 	switch {
-	case ratio < 0.1:
-		return 0xFFFFFF // white head
-	case ratio < 0.2:
-		return greenBright
-	case ratio < 0.35:
-		return greenMid
-	case ratio < 0.55:
+	case ratio < 0.08:
 		return greenDim
-	case ratio < 0.75:
+	case ratio < 0.2:
 		return greenDark
+	case ratio < 0.4:
+		return greenDarkest
 	default:
 		return greenDarkest
 	}
@@ -1141,12 +1150,21 @@ func (v *matrixVis) render() {
 	bots, _ := v.d.mgr.List()
 	n := len(bots)
 	nodes := make([]botNode, 0, n)
+
+	gridCols := int(math.Ceil(math.Sqrt(float64(n) * float64(w) / float64(max(h, 1)))))
+	if gridCols < 1 {
+		gridCols = 1
+	}
+	gridRows := int(math.Ceil(float64(n) / float64(gridCols)))
+	if gridRows < 1 {
+		gridRows = 1
+	}
+
 	for i, b := range bots {
-		angle := float64(i)/float64(max(n, 1))*2*math.Pi + float64(v.frame)*0.006
-		radius := float64(min(h, w)) * 0.38
-		cx, cy := float64(w)/2, float64(h)/2
-		x := int(cx + radius*math.Cos(angle))
-		y := int(cy + radius*math.Sin(angle)*0.5)
+		gc := i % gridCols
+		gr := i / gridCols
+		x := int(float64(w) * (float64(gc) + 0.5) / float64(gridCols))
+		y := int(float64(h) * (float64(gr) + 0.5) / float64(gridRows))
 		if x < 8 {
 			x = 8
 		}
@@ -1159,6 +1177,13 @@ func (v *matrixVis) render() {
 		if y >= h-6 {
 			y = h - 7
 		}
+
+		active := false
+		logPath := filepath.Join(b.Dir, "bot.log")
+		if info, err := os.Stat(logPath); err == nil {
+			active = time.Since(info.ModTime()) < 3*time.Second
+		}
+
 		avatar := loadAvatar(b.Dir)
 		if avatar == nil {
 			v.triggerAvatar(b.Config.Name, b.Config.Goal)
@@ -1174,18 +1199,37 @@ func (v *matrixVis) render() {
 			stale:  b.IsStale(staleThreshold()),
 			avatar: avatar,
 			dir:    b.Dir,
+			active: active,
 		})
 	}
 
 	// --- Build output ---
-	// Render row by row to avoid SetContent overhead with per-char styling
 	var sb strings.Builder
 	for row := 0; row < h; row++ {
 		buf := make([]byte, 0, w*12)
 		for col := 0; col < w; col++ {
-			// Check if this cell is a bot node area
-			if ch, color, ok := v.botCell(col, row, w, h, nodes, theme); ok {
+			// Labels, connections, aura (block rain)
+			if ch, color, ok := v.botOverlay(col, row, nodes, theme); ok {
 				buf = append(buf, v.panel.Styled(color, string(ch))...)
+				continue
+			}
+
+			// Avatar mask: rain glyph passes through, mask tints the colour
+			if mi, ok := v.avatarMaskAt(col, row, nodes); ok {
+				nd := &nodes[mi.node]
+				var ch rune
+				if rainCh, _, hasRain := v.rainCell(col, row); hasRain {
+					ch = rainCh
+				} else if nrCh, _, hasNr := v.nodeRainCell(col, row, nodes); hasNr {
+					ch = nrCh
+				} else {
+					ch = avatarGlyph(nd.name, mi.avRow, mi.avCol, v.frame)
+				}
+				mask := mi.mask
+				if nd.active && mask < '4' {
+					mask++
+				}
+				buf = append(buf, v.panel.Styled(maskColor(mask, nd.active), string(ch))...)
 				continue
 			}
 
@@ -1262,35 +1306,67 @@ func (v *matrixVis) nodeRainCell(col, row int, nodes []botNode) (rune, gotui.Col
 	return 0, 0, false
 }
 
-func (v *matrixVis) botCell(col, row, w, h int, nodes []botNode, theme *gotui.Theme) (rune, gotui.Color, bool) {
+func (v *matrixVis) avatarMaskAt(col, row int, nodes []botNode) (maskInfo, bool) {
+	for i := range nodes {
+		nd := &nodes[i]
+		if len(nd.avatar) < 5 {
+			continue
+		}
+		avatarH := len(nd.avatar)
+		halfW := len(nd.avatar[0]) / 2
+		dx := col - nd.x
+		dy := row - nd.y
+		nameOffset := 2
+		if nd.leader {
+			nameOffset = 3
+		}
+		avatarTop := -nameOffset - avatarH
+		avatarRow := dy - avatarTop
+		if avatarRow >= 0 && avatarRow < avatarH && dx >= -halfW && dx <= halfW {
+			line := nd.avatar[avatarRow]
+			charIdx := dx + halfW
+			if charIdx >= 0 && charIdx < len(line) && line[charIdx] != '0' {
+				return maskInfo{line[charIdx], i, avatarRow, charIdx}, true
+			}
+		}
+	}
+	return maskInfo{}, false
+}
+
+func maskColor(mask byte, active bool) gotui.Color {
+	if active {
+		switch mask {
+		case '1':
+			return glowFill
+		case '2':
+			return glowFeature
+		case '3':
+			return glowHighlight
+		case '4':
+			return 0xFFFFFF
+		default:
+			return glowFill
+		}
+	}
+	switch mask {
+	case '1':
+		return glowEdge
+	case '2':
+		return glowFill
+	case '3':
+		return glowFeature
+	case '4':
+		return glowHighlight
+	default:
+		return glowEdge
+	}
+}
+
+func (v *matrixVis) botOverlay(col, row int, nodes []botNode, theme *gotui.Theme) (rune, gotui.Color, bool) {
 	for i := range nodes {
 		nd := &nodes[i]
 		dx := col - nd.x
 		dy := row - nd.y
-
-		if len(nd.avatar) >= 5 {
-			avatarH := len(nd.avatar)
-			halfW := len(nd.avatar[0]) / 2
-			nameOffset := 2
-			if nd.leader {
-				nameOffset = 3
-			}
-			avatarTop := -nameOffset - avatarH
-			avatarRow := dy - avatarTop
-			if avatarRow >= 0 && avatarRow < avatarH {
-				if dx >= -halfW && dx <= halfW {
-					line := nd.avatar[avatarRow]
-					charIdx := dx + halfW
-					if charIdx >= 0 && charIdx < len(line) {
-						b := line[charIdx]
-						if b != '0' {
-							ch := avatarGlyph(nd.name, avatarRow, charIdx, v.frame)
-							return ch, brightnessColor(b), true
-						}
-					}
-				}
-			}
-		}
 
 		// Name row (y-1)
 		nameRunes := []rune(nd.name)
@@ -1357,11 +1433,13 @@ func (v *matrixVis) botCell(col, row, w, h int, nodes []botNode, theme *gotui.Th
 			continue
 		}
 		if onLine(col, row, nodes[pi].x, nodes[pi].y, nodes[i].x, nodes[i].y) {
-			ch := rune('·')
-			if (col+row+v.frame)%5 == 0 {
-				ch = randomGlyph()
+			dist := abs(col-nodes[pi].x) + abs(row-nodes[pi].y)
+			ch := randomGlyph()
+			step := (dist + v.frame/2) % 6
+			if step == 0 {
+				return ch, glowFill, true
 			}
-			return ch, greenDark, true
+			return ch, glowEdge, true
 		}
 	}
 
@@ -1483,6 +1561,22 @@ func (s faceSpec) render() []string {
 		}
 	}
 
+	hwAt := func(fy float64) float64 {
+		n := float64(len(s.halfWidths) - 1)
+		if fy < 0 {
+			return s.halfWidths[0] * math.Max(0, 1+fy)
+		}
+		if fy >= n {
+			return s.halfWidths[len(s.halfWidths)-1] * math.Max(0, 1-(fy-n))
+		}
+		y0 := int(fy)
+		if y0 >= len(s.halfWidths)-1 {
+			y0 = len(s.halfWidths) - 2
+		}
+		frac := fy - float64(y0)
+		return s.halfWidths[y0]*(1-frac) + s.halfWidths[y0+1]*frac
+	}
+
 	grid := make([][]byte, h)
 	for y := range grid {
 		grid[y] = make([]byte, maskW)
@@ -1492,14 +1586,19 @@ func (s faceSpec) render() []string {
 	}
 
 	for y := 0; y < h; y++ {
+		sy := y + 1
+		if sy >= h {
+			continue
+		}
 		for x := 0; x < maskW; x++ {
+			sx := x + 1
+			if sx >= maskW {
+				continue
+			}
 			dx := math.Abs(float64(x) - cx)
-			hw := s.halfWidths[y]
+			hw := hwAt(float64(y))
 			if hw > 0 && dx <= hw {
-				sy, sx := y+1, x+1
-				if sy < h && sx < maskW {
-					grid[sy][sx] = '1'
-				}
+				grid[sy][sx] = '1'
 			}
 		}
 	}
@@ -1510,20 +1609,34 @@ func (s faceSpec) render() []string {
 			fx := float64(x)
 			dx := math.Abs(fx - cx)
 
-			hw := s.halfWidths[y]
-			if hw > 0 && dx <= hw {
-				ratio := dx / hw
-				if ratio > 0.85 {
-					grid[y][x] = '1'
+			hw := hwAt(fy)
+			hwU := hwAt(fy - 0.5)
+			hwD := hwAt(fy + 0.5)
+			dist := hw - dx
+			if d := hwU - dx; d > dist {
+				dist = d
+			}
+			if d := hwD - dx; d > dist {
+				dist = d
+			}
+
+			switch {
+			case dist > 2.5:
+				lx := (fx - cx) / maxHW
+				ly := (fy - cyF) / float64(h)
+				light := -lx*0.6 - ly*0.5
+				if light > 0.25 {
+					grid[y][x] = '3'
 				} else {
-					lx := (fx - cx) / maxHW
-					ly := (fy - cyF) / float64(h)
-					light := -lx*0.6 - ly*0.5
-					if light > 0.25 {
-						grid[y][x] = '3'
-					} else {
-						grid[y][x] = '2'
-					}
+					grid[y][x] = '2'
+				}
+			case dist > 1:
+				grid[y][x] = '2'
+			case dist > -0.5:
+				grid[y][x] = '1'
+			case dist > -2.5:
+				if grid[y][x] == '0' {
+					grid[y][x] = '1'
 				}
 			}
 
@@ -1580,35 +1693,6 @@ func (s faceSpec) render() []string {
 				if grid[s.mouthY][x] == '3' && x%2 == 0 {
 					grid[s.mouthY][x] = '4'
 				}
-			}
-		}
-	}
-
-	glow := make([][]bool, h)
-	for y := range glow {
-		glow[y] = make([]bool, maskW)
-	}
-	for y := 0; y < h; y++ {
-		for x := 0; x < maskW; x++ {
-			if grid[y][x] != '0' {
-				for dy := -1; dy <= 1; dy++ {
-					for dx := -1; dx <= 1; dx++ {
-						if dy == 0 && dx == 0 {
-							continue
-						}
-						ny, nx := y+dy, x+dx
-						if ny >= 0 && ny < h && nx >= 0 && nx < maskW && grid[ny][nx] == '0' {
-							glow[ny][nx] = true
-						}
-					}
-				}
-			}
-		}
-	}
-	for y := 0; y < h; y++ {
-		for x := 0; x < maskW; x++ {
-			if glow[y][x] {
-				grid[y][x] = '1'
 			}
 		}
 	}
