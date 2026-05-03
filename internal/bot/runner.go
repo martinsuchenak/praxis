@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	netgossip "github.com/paularlott/scriptling/extlibs/net/gossip"
 	"github.com/paularlott/scriptling/extlibs/net/multicast"
 	"github.com/paularlott/scriptling/stdlib"
+	scriptlingllmlib "github.com/martinsuchenak/scriptling-llm-lib"
 	"github.com/paularlott/logger"
 )
 
@@ -36,6 +38,10 @@ type RunnerConfig struct {
 	WatchdogAddr string
 	// LogLevel passed to scriptling's logging library.
 	LogLevel string
+	// ModelsDir is the directory containing .gguf model files. If empty, local
+	// model inference is unavailable. The path is added to every bot's allowed
+	// filesystem paths so llm.generate() can read GGUF files.
+	ModelsDir string
 }
 
 // Runner manages the lifecycle of a single embedded scriptling bot.
@@ -103,6 +109,7 @@ func registerLibraries(p *scriptling.Scriptling, log logger.Logger) {
 	extai.Register(p)
 	memory.Register(p, log)
 	_ = agent.Register(p)
+	p.RegisterLibrary(scriptlingllmlib.Library)
 }
 
 // newBaseInterpreter creates a shared base Scriptling interpreter with all
@@ -125,6 +132,27 @@ func newChildFactory(allowedPaths []string, log logger.Logger) func() extlibs.Sa
 		extlibs.RegisterOSLibrary(child, allowedPaths)
 		return child
 	}
+}
+
+// scanGGUFModels returns a sorted list of .gguf file names found in dir.
+// Returns nil if the directory is empty or doesn't exist.
+func scanGGUFModels(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var models []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if len(name) > 5 && name[len(name)-5:] == ".gguf" {
+			models = append(models, name)
+		}
+	}
+	sort.Strings(models)
+	return models
 }
 
 // Start starts a bot runner. If the bot is already running, returns an error.
@@ -295,6 +323,9 @@ func (r *Runner) run(ctx context.Context) {
 
 		// Register per-bot OS library with restricted paths.
 		allowedPaths := cfg.AllowedPaths(r.bot.Dir, r.mgr.BotsDir, r.mgr.LocksDir)
+		if r.cfg.ModelsDir != "" {
+			allowedPaths = append(allowedPaths, r.cfg.ModelsDir)
+		}
 		extlibs.RegisterOSLibrary(b, allowedPaths)
 
 		// Pre-set CONFIG with seed_addrs and models catalog.
@@ -304,6 +335,12 @@ func (r *Runner) run(ctx context.Context) {
 		}
 		if models := loadModelsJSON(filepath.Dir(r.mgr.BotsDir)); len(models) > 0 {
 			configDict["models"] = models
+		}
+		if r.cfg.ModelsDir != "" {
+			if localModels := scanGGUFModels(r.cfg.ModelsDir); len(localModels) > 0 {
+				configDict["local_models"] = localModels
+				configDict["models_dir"] = r.cfg.ModelsDir
+			}
 		}
 		if err := b.SetVar("CONFIG", configDict); err != nil {
 			r.log.Error("SetVar CONFIG", "err", err)

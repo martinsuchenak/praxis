@@ -49,6 +49,8 @@ Files outside the bot's own directory are blocked by the scriptling `--allowed-p
 | `evolve_brain` | `content`, `reason?` | Rewrite the hot brain layer (8 KB cap). Takes effect next tick. |
 | `query_model` | `model`, `prompt`, `system?`, `thinking?` | One-shot call to any model for a subtask. |
 | `list_models` | — | List available models from the catalog. |
+| `local_generate` | `model`, `prompt`, `max_tokens?`, `strategy?`, `temperature?`, `system_prompt?`, `stats?` | Run a local GGUF model for fast, private inference. Small instruct models only — use for classification, formatting, short answers, triage. Not for complex reasoning or code. |
+| `list_local_models` | — | List available local GGUF model files. |
 | `ask_consensus` | `question`, `n?` | Poll `n` peers (default 3) and return the majority answer. |
 
 ## Memory

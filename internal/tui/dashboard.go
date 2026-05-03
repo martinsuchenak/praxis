@@ -229,7 +229,8 @@ func (d *Dashboard) refreshBotPanel() {
 	}
 
 	if gc := d.node.Cluster(); gc != nil {
-		fmt.Fprintf(&sb, "peers: %d\n", len(gc.AliveNodes()))
+		peerCount := len(gc.AliveNodes())
+		fmt.Fprintf(&sb, "peers: %d\n", peerCount-1) // exclude self
 	}
 
 	d.botPanel.SetTitle(fmt.Sprintf("BOTS %d/%d", alive, len(bots)))
@@ -300,6 +301,12 @@ func (d *Dashboard) refreshDetailPanel() {
 	}
 	sort.Strings(modelIDs)
 
+	knownBots := make(map[string]bool, len(bots))
+	for _, b := range bots {
+		knownBots[b.Config.Name] = true
+	}
+	cleanStaleQueueTickets(d.mgr.LocksDir, knownBots)
+
 	if len(modelIDs) > 0 {
 		sb.WriteString(d.detailPanel.Styled(theme.Primary, "━━━ models ━━━") + "\n\n")
 		for _, id := range modelIDs {
@@ -325,7 +332,7 @@ func (d *Dashboard) refreshDetailPanel() {
 			}
 			sanitized := sanitizeModel(id)
 			queueDir := filepath.Join(d.mgr.LocksDir, sanitized)
-			if queueCount := countQueueTickets(queueDir); queueCount > 0 {
+			if queueCount := countQueueTickets(queueDir, knownBots); queueCount > 0 {
 				stats += " " + d.detailPanel.Styled(theme.Error, fmt.Sprintf("q:%d", queueCount))
 			}
 			fmt.Fprintf(&sb, "   %s\n", stats)
@@ -775,14 +782,21 @@ func (d *Dashboard) cmdRemove(name string) {
 		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
 		return
 	}
+	if err := d.pool.Kill(name); err != nil && !strings.Contains(err.Error(), "not running") {
+		d.showInfo(fmt.Sprintf("kill %s: %v", name, err))
+		return
+	}
 	d.mgr.RemoveLocks(name)
-	go func() { _ = d.pool.Kill(name) }()
 	if err := d.mgr.Delete(name); err != nil {
 		return
 	}
 	d.mu.Lock()
 	if d.selectedBot == name {
 		d.selectedBot = ""
+		if d.logCancel != nil {
+			d.logCancel()
+			d.logCancel = nil
+		}
 	}
 	d.mu.Unlock()
 	d.showInfo(fmt.Sprintf("removed %s", name))
@@ -2094,14 +2108,55 @@ func sanitizeModel(m string) string {
 	return m
 }
 
-func countQueueTickets(queueDir string) int {
+func cleanStaleQueueTickets(locksDir string, knownBots map[string]bool) {
+	entries, err := os.ReadDir(locksDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		files, err := os.ReadDir(filepath.Join(locksDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if !strings.HasSuffix(f.Name(), ".wait") {
+				continue
+			}
+			isKnown := false
+			for bot := range knownBots {
+				if strings.Contains(f.Name(), "_"+bot+".wait") {
+					isKnown = true
+					break
+				}
+			}
+			if !isKnown {
+				_ = os.Remove(filepath.Join(locksDir, e.Name(), f.Name()))
+			}
+		}
+	}
+}
+
+func countQueueTickets(queueDir string, knownBots map[string]bool) int {
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		return 0
 	}
 	count := 0
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".wait") {
+		if !strings.HasSuffix(e.Name(), ".wait") {
+			continue
+		}
+		if len(knownBots) > 0 {
+			for bot := range knownBots {
+				if strings.Contains(e.Name(), "_"+bot+".wait") {
+					count++
+					break
+				}
+			}
+		} else {
 			count++
 		}
 	}

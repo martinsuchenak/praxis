@@ -335,6 +335,38 @@ while True:
 	}
 }
 
+func TestScanGGUFModels(t *testing.T) {
+	dir := t.TempDir()
+
+	// Empty dir returns nil.
+	if got := scanGGUFModels(dir); got != nil {
+		t.Errorf("empty dir: got %v, want nil", got)
+	}
+
+	// Create some files.
+	for _, name := range []string{"model-a.gguf", "model-b.gguf", "readme.txt", "model-c.gguf"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := scanGGUFModels(dir)
+	want := []string{"model-a.gguf", "model-b.gguf", "model-c.gguf"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i, v := range got {
+		if v != want[i] {
+			t.Errorf("got[%d] = %q, want %q", i, v, want[i])
+		}
+	}
+
+	// Non-existent dir returns nil.
+	if got := scanGGUFModels("/no/such/dir"); got != nil {
+		t.Errorf("missing dir: got %v, want nil", got)
+	}
+}
+
 func TestRunnerPoolKillAll(t *testing.T) {
 	root, mgr := makeRunnerProject(t)
 	blockScript := `

@@ -50,6 +50,12 @@ Copy `.env.example` to `.env` and fill in at minimum `BOT_API_KEY`, `BOT_BASE_UR
 | `BOT_SHELL_ALLOWLIST` | — | Comma-separated executables bots may run via `shell` (default: unrestricted except `curl`/`wget`) |
 | `BOT_HTTP_ALLOWLIST` | — | Comma-separated domains bots may call via `http_request` (default: unrestricted) |
 
+## Local Models (GGUF)
+
+| Variable | Default | Description |
+|---|---|---|
+| `BOT_MODELS_DIR` | `<project_dir>/models` | Directory containing `.gguf` model files. If set and the directory exists, local inference via `local_generate` is available to all bots. |
+
 ## Praxis
 
 | Variable | Default | Description |

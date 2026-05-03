@@ -12,6 +12,7 @@ import scriptling.net.gossip as gossip
 import scriptling.net.multicast as mc
 import scriptling.grep as greplib
 import scriptling.sed as sedlib
+import llm
 import os
 import os.path
 import json
@@ -63,6 +64,9 @@ HTTP_ALLOWLIST = [h.strip() for h in os.environ.get("BOT_HTTP_ALLOWLIST", "").sp
 SHELL_ALLOWLIST = [h.strip() for h in os.environ.get("BOT_SHELL_ALLOWLIST", "").split(",") if h.strip()]
 
 AVAILABLE_MODELS = CONFIG.get("models", []) or []
+
+LOCAL_MODELS = CONFIG.get("local_models", []) or []
+MODELS_DIR = CONFIG.get("models_dir", "")
 
 GOSSIP_MSG = gossip.MSG_USER
 
@@ -1241,6 +1245,31 @@ def _list_models(args):
     return json.dumps(AVAILABLE_MODELS)
 
 
+def _local_generate(args):
+    if not MODELS_DIR or not LOCAL_MODELS:
+        return "Error: no local models available."
+    model_file = args["model"]
+    if model_file not in LOCAL_MODELS:
+        return "Error: unknown local model. Use list_local_models to see available models."
+    prompt = args["prompt"]
+    max_tokens = int(args.get("max_tokens", 100))
+    strategy = args.get("strategy", "greedy")
+    model_path = MODELS_DIR + "/" + model_file
+    try:
+        return llm.generate(model_path, prompt, max_tokens, strategy,
+                            temperature=float(args.get("temperature", 0.0)),
+                            system_prompt=args.get("system_prompt", ""),
+                            stats=args.get("stats", False))
+    except Exception as e:
+        return "Error: " + str(e)
+
+
+def _list_local_models(args):
+    if not LOCAL_MODELS:
+        return "No local models available."
+    return json.dumps(LOCAL_MODELS)
+
+
 def _http_allowed(url):
     if not HTTP_ALLOWLIST:
         return True
@@ -1403,6 +1432,8 @@ tools.add("archive_to_warm_memory", "Move content from your brain to warm memory
 tools.add("update_warm_memory", "Overwrite or append to warm memory directly.", {"content": "string", "action": "string?"}, _wrap_tool("update_warm_memory", _update_warm_memory))
 tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "bool?"}, _wrap_tool("query_model", _query_model))
 tools.add("list_models", "List available models with descriptions, costs, and strengths", {}, _wrap_tool("list_models", _list_models))
+tools.add("local_generate", "Run a local GGUF model for fast, private inference. These are small instruct models — use only for simple tasks like classification, formatting, short answers, text extraction, or quick triage. NOT for complex reasoning, coding, or long-form generation.", {"model": "string", "prompt": "string", "max_tokens": "int?", "strategy": "string?", "temperature": "float?", "system_prompt": "string?", "stats": "bool?"}, _wrap_tool("local_generate", _local_generate))
+tools.add("list_local_models", "List available local GGUF models for private inference", {}, _wrap_tool("list_local_models", _list_local_models))
 tools.add("http_request", "HTTP request (GET/POST/PUT/DELETE/PATCH) with optional body and headers", {"url": "string", "method": "string?", "body": "string?", "content_type": "string?", "headers": "string?", "timeout": "int?"}, _wrap_tool("http_request", _http_request))
 tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "int?"}, _wrap_tool("ask_consensus", _ask_consensus))
 tools.add("memory_remember", "Store a fact, lesson, or observation in persistent memory. Include a reason explaining why this is worth remembering.", {"content": "string", "type": "string?", "importance": "float?", "reason": "string?"}, _wrap_tool("memory_remember", _memory_remember))
@@ -1485,6 +1516,26 @@ def _build_system_prompt():
             if m.get("strengths"):
                 prompt += " Strengths: " + ", ".join(m["strengths"]) + "."
             prompt += "\n"
+        prompt += "\n"
+
+    if LOCAL_MODELS:
+        prompt += "## Local Models (Private Inference)\n"
+        prompt += "You have local GGUF models available for fast, private inference that does NOT call an external API.\n"
+        prompt += "Use `local_generate(model, prompt)` to generate text locally. Use `list_local_models` to see what is available.\n\n"
+        prompt += "**These are small instruct models.** Use them ONLY for:\n"
+        prompt += "- Text classification, sentiment analysis, intent detection\n"
+        prompt += "- Short formatting, rephrasing, summarization\n"
+        prompt += "- Quick triage, routing, yes/no decisions\n"
+        prompt += "- Keyword extraction, simple data transformation\n\n"
+        prompt += "Do NOT use local models for:\n"
+        prompt += "- Complex reasoning, math, or multi-step logic\n"
+        prompt += "- Code generation, debugging, or technical analysis\n"
+        prompt += "- Long-form writing or creative generation\n"
+        prompt += "- Tasks requiring nuance, accuracy, or deep understanding\n\n"
+        prompt += "For anything complex, use your primary model or `query_model` with a remote model instead.\n\n"
+        prompt += "Available local models:\n"
+        for m in LOCAL_MODELS:
+            prompt += "- " + m + "\n"
         prompt += "\n"
 
     prompt += "## Handling messages\n"

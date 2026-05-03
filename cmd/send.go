@@ -73,7 +73,7 @@ func sendGossipMessage(ctx context.Context, botName, content, secret string, see
 	gcfg := gossip.DefaultConfig()
 	gcfg.BindAddr = bindAddr
 	gcfg.AdvertiseAddr = bindAddr
-	gcfg.MsgCodec = codec.NewJsonCodec()
+	gcfg.MsgCodec = codec.NewVmihailencoMsgpackCodec()
 	gcfg.Transport = gossip.NewSocketTransport(gcfg)
 
 	gc, err := gossip.NewCluster(gcfg)

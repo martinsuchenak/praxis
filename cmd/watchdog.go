@@ -63,6 +63,11 @@ func watchdogCmd() *cli.Command {
 				Usage:   "Disable gossip secret validation (dev mode)",
 				EnvVars: []string{"BOT_AUTH_DISABLED"},
 			},
+			&cli.StringFlag{
+				Name:    "models-dir",
+				Usage:   "Directory containing .gguf model files for local inference",
+				EnvVars: []string{"BOT_MODELS_DIR"},
+			},
 		},
 		Run: func(ctx context.Context, cmd *cli.Command) error {
 			app := appCtx(ctx)
@@ -117,6 +122,7 @@ func watchdogCmd() *cli.Command {
 			// Create runner pool with watchdog as the gossip seed for bots.
 			runnerCfg := bot.RunnerConfig{
 				WatchdogAddr: advertise,
+				ModelsDir:    resolveModelsDir(cmd.GetString("models-dir"), app.Dir),
 			}
 			pool := bot.NewRunnerPool(app.Manager, runnerCfg, log)
 

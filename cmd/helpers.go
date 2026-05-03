@@ -29,6 +29,24 @@ func parseCSVFlag(val string) []string {
 	return out
 }
 
+// resolveModelsDir returns the absolute path to the GGUF models directory.
+// If raw is empty, it defaults to <projectDir>/models. Returns "" if the
+// directory does not exist.
+func resolveModelsDir(raw, projectDir string) string {
+	p := raw
+	if p == "" {
+		p = filepath.Join(projectDir, "models")
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return ""
+	}
+	return abs
+}
+
 // resolveWorkspace looks up a workspace name in workspaces.json and returns
 // (path, gossipSecret, defaultScope). Returns empty strings if not found.
 func resolveWorkspace(projectDir, name string) (path, gossipSecret, defaultScope string) {
