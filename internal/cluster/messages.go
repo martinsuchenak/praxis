@@ -16,59 +16,59 @@ const (
 
 // botRequest is the discriminator header — only "type" is decoded first.
 type botRequest struct {
-	Type string `msgpack:"type"`
+	Type string `msgpack:"type" json:"type"`
 }
 
 // ShellRequest is sent by a bot to execute a shell command via the watchdog.
 type ShellRequest struct {
-	Type    string `msgpack:"type"`
-	BotID   string `msgpack:"bot_id"`
-	Command string `msgpack:"command"`
-	CWD     string `msgpack:"cwd"`
-	Timeout int    `msgpack:"timeout"` // seconds, 0 = default
-	Secret  string `msgpack:"_secret"`
+	Type    string `msgpack:"type" json:"type"`
+	BotID   string `msgpack:"bot_id" json:"bot_id"`
+	Command string `msgpack:"command" json:"command"`
+	CWD     string `msgpack:"cwd" json:"cwd"`
+	Timeout int    `msgpack:"timeout" json:"timeout"`
+	Secret  string `msgpack:"_secret" json:"_secret"`
 }
 
 // ShellReply is sent back to the bot after the command completes.
 type ShellReply struct {
-	ExitCode int    `msgpack:"exit_code"`
-	Stdout   string `msgpack:"stdout"`
-	Stderr   string `msgpack:"stderr"`
-	Error    string `msgpack:"error,omitempty"`
+	ExitCode int    `msgpack:"exit_code" json:"exit_code"`
+	Stdout   string `msgpack:"stdout" json:"stdout"`
+	Stderr   string `msgpack:"stderr" json:"stderr"`
+	Error    string `msgpack:"error,omitempty" json:"error,omitempty"`
 }
 
 // SpawnRequest is sent by a bot to create a child bot.
 type SpawnRequest struct {
-	Type              string   `msgpack:"type"`
-	Name              string   `msgpack:"name"`
-	Goal              string   `msgpack:"goal"`
-	Model             string   `msgpack:"model"`
-	Brain             string   `msgpack:"brain,omitempty"`
-	Thinking          bool     `msgpack:"thinking"`
-	Workspace         string   `msgpack:"workspace,omitempty"`
-	Scope             string   `msgpack:"scope,omitempty"`
-	AllowedWorkspaces []string `msgpack:"allowed_workspaces,omitempty"`
-	ParentID          string   `msgpack:"parent_id"`
-	Secret            string   `msgpack:"_secret"`
+	Type              string   `msgpack:"type" json:"type"`
+	Name              string   `msgpack:"name" json:"name"`
+	Goal              string   `msgpack:"goal" json:"goal"`
+	Model             string   `msgpack:"model" json:"model"`
+	Brain             string   `msgpack:"brain,omitempty" json:"brain,omitempty"`
+	Thinking          bool     `msgpack:"thinking" json:"thinking"`
+	Workspace         string   `msgpack:"workspace,omitempty" json:"workspace,omitempty"`
+	Scope             string   `msgpack:"scope,omitempty" json:"scope,omitempty"`
+	AllowedWorkspaces []string `msgpack:"allowed_workspaces,omitempty" json:"allowed_workspaces,omitempty"`
+	ParentID          string   `msgpack:"parent_id" json:"parent_id"`
+	Secret            string   `msgpack:"_secret" json:"_secret"`
 }
 
 // SpawnReply is sent back to the requesting bot.
 type SpawnReply struct {
-	BotID string `msgpack:"bot_id,omitempty"`
-	Error string `msgpack:"error,omitempty"`
+	BotID string `msgpack:"bot_id,omitempty" json:"bot_id,omitempty"`
+	Error string `msgpack:"error,omitempty" json:"error,omitempty"`
 }
 
 // RelayRequest is sent by a gateway bot to forward a message to another bot.
 type RelayRequest struct {
-	Type      string `msgpack:"type"`
-	From      string `msgpack:"from"`
-	TargetBot string `msgpack:"target_bot"`
-	Content   string `msgpack:"content"`
-	Secret    string `msgpack:"_secret"`
+	Type      string `msgpack:"type" json:"type"`
+	From      string `msgpack:"from" json:"from"`
+	TargetBot string `msgpack:"target_bot" json:"target_bot"`
+	Content   string `msgpack:"content" json:"content"`
+	Secret    string `msgpack:"_secret" json:"_secret"`
 }
 
 // RelayReply is sent back to the requesting bot.
 type RelayReply struct {
-	Status string `msgpack:"status,omitempty"`
-	Error  string `msgpack:"error,omitempty"`
+	Status string `msgpack:"status,omitempty" json:"status,omitempty"`
+	Error  string `msgpack:"error,omitempty" json:"error,omitempty"`
 }

@@ -93,7 +93,7 @@ func New(cfg Config, mgr *bot.Manager, sb sandbox.Sandbox, log logger.Logger) (*
 	gcfg := gossip.DefaultConfig()
 	gcfg.BindAddr = cfg.BindAddr
 	gcfg.AdvertiseAddr = cfg.AdvertiseAddr
-	gcfg.MsgCodec = codec.NewVmihailencoMsgpackCodec()
+	gcfg.MsgCodec = codec.NewJsonCodec()
 	gcfg.Transport = gossip.NewSocketTransport(gcfg)
 	gcfg.Logger = log
 

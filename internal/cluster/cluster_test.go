@@ -19,7 +19,7 @@ import (
 // of the request structs (encodes an integer instead of a map).
 func testCorruptPacket(t *testing.T) *gossip.Packet {
 	t.Helper()
-	c := codec.NewVmihailencoMsgpackCodec()
+	c := codec.NewJsonCodec()
 	data, err := c.Marshal(42) // integer, not a map/struct
 	if err != nil {
 		t.Fatalf("marshal corrupt payload: %v", err)
@@ -43,10 +43,10 @@ func testNode(t *testing.T, root string, sb sandbox.Sandbox, secret string) *Nod
 	}
 }
 
-// testPacket marshals v into a gossip.Packet using the vmihailenco codec.
+// testPacket marshals v into a gossip.Packet using the JSON codec.
 func testPacket(t *testing.T, v interface{}) *gossip.Packet {
 	t.Helper()
-	c := codec.NewVmihailencoMsgpackCodec()
+	c := codec.NewJsonCodec()
 	data, err := c.Marshal(v)
 	if err != nil {
 		t.Fatalf("marshal packet: %v", err)
