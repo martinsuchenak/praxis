@@ -65,6 +65,22 @@ func tuiCmd() *cli.Command {
 				Usage:   "Directory containing .gguf model files for local inference",
 				EnvVars: []string{"BOT_MODELS_DIR"},
 			},
+			&cli.StringFlag{
+				Name:    "node-name",
+				Usage:   "Human-readable name for this watchdog node (default: advertise address)",
+				EnvVars: []string{"BOT_NODE_NAME"},
+			},
+			&cli.StringFlag{
+				Name:         "multicast-addr",
+				Usage:        "Multicast group address for auto-discovery (default: 239.255.13.37)",
+				EnvVars:      []string{"BOT_MULTICAST_ADDR"},
+			},
+			&cli.IntFlag{
+				Name:         "multicast-port",
+				Usage:        "Multicast port for auto-discovery (default: 19373)",
+				DefaultValue: 19373,
+				EnvVars:      []string{"BOT_MULTICAST_PORT"},
+			},
 		},
 		Run: func(ctx context.Context, cmd *cli.Command) error {
 			app := appCtx(ctx)
@@ -106,6 +122,9 @@ func tuiCmd() *cli.Command {
 				ExtraMounts:    cmd.GetString("mounts"),
 				ShellAllowlist: parseCSVFlag(cmd.GetString("allowlist")),
 				AuthDisabled:   cmd.GetBool("auth-disabled"),
+				NodeName:       cmd.GetString("node-name"),
+				MulticastAddr:  cmd.GetString("multicast-addr"),
+				MulticastPort:  cmd.GetInt("multicast-port"),
 			}
 
 			node, err := cluster.New(clusterCfg, app.Manager, sb, log)

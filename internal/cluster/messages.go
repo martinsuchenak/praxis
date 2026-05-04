@@ -9,9 +9,11 @@ const MsgBotToWatchdog = gossip.UserMsg // 128
 
 // Sub-handler type strings (must match botcore.py values).
 const (
-	TypeShellReq = "shell_req"
-	TypeSpawnReq = "spawn_req"
-	TypeRelayReq = "relay_req"
+	TypeShellReq       = "shell_req"
+	TypeSpawnReq       = "spawn_req"
+	TypeRelayReq       = "relay_req"
+	TypeRemoteSpawnReq = "remote_spawn_req"
+	TypeTerminateReq   = "terminate_req"
 )
 
 // botRequest is the discriminator header — only "type" is decoded first.
@@ -69,6 +71,19 @@ type RelayRequest struct {
 
 // RelayReply is sent back to the requesting bot.
 type RelayReply struct {
+	Status string `msgpack:"status,omitempty"`
+	Error  string `msgpack:"error,omitempty"`
+}
+
+// TerminateRequest is sent by a bot to request its own termination.
+type TerminateRequest struct {
+	Type  string `msgpack:"type"`
+	BotID string `msgpack:"bot_id"`
+	Secret string `msgpack:"_secret"`
+}
+
+// TerminateReply is sent back to the requesting bot.
+type TerminateReply struct {
 	Status string `msgpack:"status,omitempty"`
 	Error  string `msgpack:"error,omitempty"`
 }

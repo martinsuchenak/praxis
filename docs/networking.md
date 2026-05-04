@@ -2,6 +2,8 @@
 
 ## Discovery
 
+### Bots
+
 On startup each bot:
 
 1. Tries any `seed_addrs` from its CONFIG to join an existing gossip cluster.
@@ -10,6 +12,18 @@ On startup each bot:
 4. Broadcasts a multicast announce so future bots can find it.
 
 Every 10 ticks (≈5 min) each bot re-announces on multicast, so bots that start later can join.
+
+### Watchdog Nodes
+
+When `--seeds` is provided, watchdogs join explicitly via those seed addresses.
+
+When no seeds are configured, watchdogs use **multicast auto-discovery** on `239.255.13.37:19373` (same group/port as bots):
+
+1. The watchdog listens on the multicast group and periodically broadcasts discover messages.
+2. When it hears another watchdog, it joins its gossip cluster.
+3. Discovery stops once the first peer is found (subsequent peers propagate via gossip membership).
+
+This allows multiple `praxis watchdog` (or `praxis tui`) instances on the same network to find each other without manual configuration. Disable by providing `--seeds` or setting `BOT_MULTICAST_ADDR=""`.
 
 ## Gossip Cluster
 
@@ -32,6 +46,8 @@ All inter-bot messages are sent via `gossip.send_to()`. Request/reply patterns u
 | `relay_req` | request/reply | Bot → watchdog cross-workspace relay — reply: `{"status": "relayed"}` or `{"error": ...}` |
 | `relayed_message` | one-way | Watchdog → bot cross-workspace message — contains `from`, `content` |
 | `spawn_req` | request/reply | Bot → watchdog spawn request — reply: `{"status": "spawned"}` or `{"error": ...}` |
+| `remote_spawn_req` | request/reply | Watchdog → watchdog remote spawn — creates a bot on the target node |
+| `terminate_req` | request/reply | Bot → watchdog self-termination request — reply: `{"status": "terminated"}` or `{"error": ...}` |
 
 ## Communication Scope
 

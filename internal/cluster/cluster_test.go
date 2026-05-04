@@ -648,6 +648,227 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnvNodeName(t *testing.T) {
+	t.Setenv("BOT_NODE_NAME", "node-1")
+	cfg := ConfigFromEnv()
+	if cfg.NodeName != "node-1" {
+		t.Errorf("NodeName: got %q want %q", cfg.NodeName, "node-1")
+	}
+}
+
+// --- handleRemoteSpawnReq ---
+
+func TestHandleRemoteSpawnReqSuccess(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cr3t")
+
+	pkt := testPacket(t, &SpawnRequest{
+		Type:   TypeRemoteSpawnReq,
+		Name:   "rbot",
+		Goal:   "remote work",
+		Model:  "gpt-4",
+		Secret: "s3cr3t",
+	})
+	reply, err := n.handleRemoteSpawnReq(nil, pkt)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	sr := reply.(*SpawnReply)
+	if sr.Error != "" {
+		t.Errorf("unexpected error: %s", sr.Error)
+	}
+	if sr.BotID != "rbot" {
+		t.Errorf("bot_id: got %q want %q", sr.BotID, "rbot")
+	}
+	if _, err := os.Stat(filepath.Join(root, "bots", "rbot")); err != nil {
+		t.Errorf("remote bot dir not created: %v", err)
+	}
+}
+
+func TestHandleRemoteSpawnReqInvalidSecret(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cr3t")
+
+	pkt := testPacket(t, &SpawnRequest{
+		Type:   TypeRemoteSpawnReq,
+		Name:   "rbot",
+		Goal:   "remote work",
+		Model:  "gpt-4",
+		Secret: "wrong",
+	})
+	reply, _ := n.handleRemoteSpawnReq(nil, pkt)
+	if reply.(*SpawnReply).Error == "" {
+		t.Error("expected error for invalid secret")
+	}
+}
+
+func TestHandleRemoteSpawnReqMissingFields(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &SpawnRequest{
+		Type:   TypeRemoteSpawnReq,
+		Name:   "",
+		Goal:   "",
+		Model:  "",
+		Secret: "",
+	})
+	reply, _ := n.handleRemoteSpawnReq(nil, pkt)
+	if reply.(*SpawnReply).Error == "" {
+		t.Error("expected error for missing name/goal/model")
+	}
+}
+
+func TestHandleRemoteSpawnReqBadUnmarshal(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	reply, err := n.handleRemoteSpawnReq(nil, testCorruptPacket(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reply.(*SpawnReply).Error == "" {
+		t.Error("expected error for corrupt packet")
+	}
+}
+
+// --- handleTerminateReq ---
+
+func TestHandleTerminateReqSuccess(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "doom", &bot.BotConfig{})
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &TerminateRequest{
+		Type:   TypeTerminateReq,
+		BotID:  "doom",
+		Secret: "",
+	})
+	reply, err := n.handleTerminateReq(nil, pkt)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	tr := reply.(*TerminateReply)
+	if tr.Error != "" {
+		t.Errorf("unexpected error: %s", tr.Error)
+	}
+	if tr.Status != "terminated" {
+		t.Errorf("status: got %q want %q", tr.Status, "terminated")
+	}
+	state, _ := bot.LoadState(filepath.Join(root, "bots", "doom"))
+	if state.Status != bot.StatusKilled {
+		t.Errorf("bot status: got %q want %q", state.Status, bot.StatusKilled)
+	}
+}
+
+func TestHandleTerminateReqInvalidSecret(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "secbot", &bot.BotConfig{GossipSecret: "s3cr3t"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &TerminateRequest{
+		Type:   TypeTerminateReq,
+		BotID:  "secbot",
+		Secret: "wrong",
+	})
+	reply, _ := n.handleTerminateReq(nil, pkt)
+	if reply.(*TerminateReply).Error == "" {
+		t.Error("expected error for invalid secret")
+	}
+}
+
+func TestHandleTerminateReqUnknownBot(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &TerminateRequest{
+		Type:   TypeTerminateReq,
+		BotID:  "ghost",
+		Secret: "",
+	})
+	reply, _ := n.handleTerminateReq(nil, pkt)
+	if reply.(*TerminateReply).Error == "" {
+		t.Error("expected error for unknown bot")
+	}
+}
+
+func TestHandleTerminateReqMissingBotID(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &TerminateRequest{
+		Type:   TypeTerminateReq,
+		BotID:  "",
+		Secret: "",
+	})
+	reply, _ := n.handleTerminateReq(nil, pkt)
+	if reply.(*TerminateReply).Error == "" {
+		t.Error("expected error for missing bot_id")
+	}
+}
+
+func TestHandleTerminateReqBadUnmarshal(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	reply, err := n.handleTerminateReq(nil, testCorruptPacket(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reply.(*TerminateReply).Error == "" {
+		t.Error("expected error for corrupt packet")
+	}
+}
+
+// --- dispatcher routing for new types ---
+
+func TestHandleBotMsgDispatchRemoteSpawn(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &SpawnRequest{
+		Type:   TypeRemoteSpawnReq,
+		Name:   "dispatched",
+		Goal:   "test",
+		Model:  "m",
+		Secret: "",
+	})
+	reply, err := n.handleBotMsg(nil, pkt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sr, ok := reply.(*SpawnReply)
+	if !ok {
+		t.Fatalf("expected *SpawnReply, got %T", reply)
+	}
+	if sr.BotID != "dispatched" {
+		t.Errorf("bot_id: got %q want %q", sr.BotID, "dispatched")
+	}
+}
+
+func TestHandleBotMsgDispatchTerminate(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "victim", &bot.BotConfig{})
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &TerminateRequest{
+		Type:   TypeTerminateReq,
+		BotID:  "victim",
+		Secret: "",
+	})
+	reply, err := n.handleBotMsg(nil, pkt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tr, ok := reply.(*TerminateReply)
+	if !ok {
+		t.Fatalf("expected *TerminateReply, got %T", reply)
+	}
+	if tr.Status != "terminated" {
+		t.Errorf("status: got %q want %q", tr.Status, "terminated")
+	}
+}
+
 func TestConfigFromEnvDefaults(t *testing.T) {
 	t.Setenv("BOT_WATCHDOG_PORT", "")
 	t.Setenv("BOT_WATCHDOG_ADDR", "")

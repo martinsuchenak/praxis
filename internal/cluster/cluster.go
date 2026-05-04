@@ -32,16 +32,29 @@ type Config struct {
 	// AuthDisabled explicitly disables gossip secret validation.
 	// When false (default), requests are rejected if no secret is configured anywhere.
 	AuthDisabled bool
+	// NodeName is a human-readable name for this watchdog node.
+	// Advertised via gossip metadata so peers can target this node for remote spawn.
+	// Defaults to the advertise address if empty.
+	NodeName string
+	// MulticastAddr is the multicast group address for auto-discovery.
+	// Defaults to 239.255.13.37. Set to "" to disable auto-discovery.
+	MulticastAddr string
+	// MulticastPort is the UDP port for multicast auto-discovery.
+	// Defaults to 19373.
+	MulticastPort int
 }
 
 // ConfigFromEnv builds a Config from well-known environment variables.
 //
-//	BOT_WATCHDOG_PORT  listen port (default 7700)
-//	BOT_WATCHDOG_ADDR  advertise address (defaults to bind addr)
-//	BOT_GLOBAL_SECRET  fallback gossip secret
-//	BOT_SHELL_MOUNTS   extra sandbox mounts
-//	BOT_SHELL_ALLOWLIST comma-separated command allowlist (empty = all allowed)
-//	BOT_AUTH_DISABLED  set to "true" to disable secret validation
+//	BOT_WATCHDOG_PORT     listen port (default 7700)
+//	BOT_WATCHDOG_ADDR     advertise address (defaults to bind addr)
+//	BOT_GLOBAL_SECRET     fallback gossip secret
+//	BOT_SHELL_MOUNTS      extra sandbox mounts
+//	BOT_SHELL_ALLOWLIST   comma-separated command allowlist (empty = all allowed)
+//	BOT_AUTH_DISABLED     set to "true" to disable secret validation
+//	BOT_NODE_NAME         human-readable node name (default: advertise address)
+//	BOT_MULTICAST_ADDR    multicast group for auto-discovery (default: 239.255.13.37)
+//	BOT_MULTICAST_PORT    multicast port for auto-discovery (default: 19373)
 func ConfigFromEnv() Config {
 	port := os.Getenv("BOT_WATCHDOG_PORT")
 	if port == "" {
@@ -61,6 +74,9 @@ func ConfigFromEnv() Config {
 		ExtraMounts:    os.Getenv("BOT_SHELL_MOUNTS"),
 		ShellAllowlist: parseAllowlist(os.Getenv("BOT_SHELL_ALLOWLIST")),
 		AuthDisabled:   os.Getenv("BOT_AUTH_DISABLED") == "true",
+		NodeName:       os.Getenv("BOT_NODE_NAME"),
+		MulticastAddr:  os.Getenv("BOT_MULTICAST_ADDR"),
+		MulticastPort:  envInt("BOT_MULTICAST_PORT", defaultMCPort),
 	}
 }
 
@@ -76,6 +92,16 @@ func parseAllowlist(env string) []string {
 		}
 	}
 	return list
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n := def
+	fmt.Sscanf(v, "%d", &n)
+	return n
 }
 
 // Node is the watchdog gossip node. It owns the gossip.Cluster and registers
@@ -123,12 +149,29 @@ func (n *Node) Start(ctx context.Context) error {
 	n.cluster.LocalMetadata().SetString("role", "watchdog")
 	// Advertise an id so bots display a readable sender name in their inbox.
 	n.cluster.LocalMetadata().SetString("id", "operator")
+	// Advertise node name so peers can target this node for remote spawn.
+	nodeName := n.cfg.NodeName
+	if nodeName == "" {
+		nodeName = n.cfg.AdvertiseAddr
+	}
+	n.cluster.LocalMetadata().SetString("node_name", nodeName)
 
 	// Join seed peers if provided.
 	if len(n.cfg.Seeds) > 0 {
 		if err := n.cluster.Join(n.cfg.Seeds); err != nil {
 			n.log.Warn("could not join seed peers", "err", err)
 		}
+	} else {
+		mcCfg := multicastConfig{
+			Group: n.cfg.MulticastAddr,
+			Port:  n.cfg.MulticastPort,
+		}
+		if mcCfg.Group == "" {
+			mcCfg = defaultMulticastConfig()
+		}
+		startDiscovery(ctx, mcCfg, n.cfg.AdvertiseAddr, n.log, func(addrs []string) error {
+			return n.cluster.Join(addrs)
+		})
 	}
 
 	// Propagate context cancellation to cluster shutdown.
@@ -213,6 +256,10 @@ func (n *Node) handleBotMsg(gn *gossip.Node, pkt *gossip.Packet) (interface{}, e
 		return n.handleSpawnReq(gn, pkt)
 	case TypeRelayReq:
 		return n.handleRelayReq(gn, pkt)
+	case TypeRemoteSpawnReq:
+		return n.handleRemoteSpawnReq(gn, pkt)
+	case TypeTerminateReq:
+		return n.handleTerminateReq(gn, pkt)
 	default:
 		n.log.Warn("bot_msg: unknown type", "type", hdr.Type)
 		return &ShellReply{Error: "unknown message type: " + hdr.Type, ExitCode: 1}, nil

@@ -868,6 +868,27 @@ def _shell(args):
         return "Error: " + str(e)
 
 
+def _terminate(_args):
+    watchdog = _find_watchdog()
+    if watchdog is None:
+        return "Error: watchdog not available"
+    req_payload = {
+        "type": "terminate_req",
+        "bot_id": BOT_ID,
+    }
+    if GOSSIP_SECRET:
+        req_payload["_secret"] = GOSSIP_SECRET
+    try:
+        resp = cluster.send_request(watchdog["id"], GOSSIP_MSG, req_payload)
+        if resp is None:
+            return "Error: no response from watchdog"
+        if resp.get("error"):
+            return "Terminate error: " + resp["error"]
+        return "Terminated. Shutting down."
+    except Exception as e:
+        return "Error: " + str(e)
+
+
 def _search(args):
     pattern = args["pattern"]
     rel_path = args.get("path", "entities")
@@ -1419,6 +1440,7 @@ tools.add("replace_in_file", "Replace text in a file (more efficient than read+w
 tools.add("list_dir", "List files in a directory", {"path": "string?"}, _wrap_tool("list_dir", _list_dir))
 tools.add("search", "Search file contents with a regex pattern", {"pattern": "string", "path": "string?", "glob": "string?", "ignore_case": "bool?"}, _wrap_tool("search", _search))
 tools.add("shell", "Run a shell command via the command proxy (sandboxed, no network tools)", {"command": "string", "cwd": "string?", "timeout": "int?"}, _wrap_tool("shell", _shell))
+tools.add("terminate", "Request the watchdog to terminate you. Use when your goal is complete or you are no longer needed.", {}, _wrap_tool("terminate", _terminate))
 tools.add("run_script", "Run a scriptling script", {"path": "string", "args": "string?"}, _wrap_tool("run_script", _run_script))
 tools.add("send_message", "Send a direct message to a bot by ID", {"recipient": "string", "content": "string"}, _wrap_tool("send_message", _send_message))
 tools.add("complete_task", "Report task completion to your parent bot", {"parent_bot": "string", "result": "string", "task_id": "string?"}, _wrap_tool("complete_task", _complete_task))

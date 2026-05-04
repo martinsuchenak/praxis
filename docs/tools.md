@@ -23,6 +23,7 @@ Files outside the bot's own directory are blocked by the scriptling `--allowed-p
 |---|---|---|
 | `shell` | `command`, `cwd?`, `timeout?` | Run a shell command via the watchdog proxy. Enforces allowlist + bwrap sandbox. |
 | `run_script` | `path`, `args?` | Run a scriptling script. |
+| `terminate` | — | Request the watchdog to terminate you. Use when your goal is complete or you are no longer needed. |
 
 `shell` requires the watchdog to be running. `curl`/`wget` are blocked — use `http_request` instead.
 

@@ -83,7 +83,8 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 			{Name: "restart-stale", Description: "Restart all stale bots", Handler: func(_ string) { d.cmdRestartStale() }},
 			{Name: "remove", Description: "Kill and permanently delete a bot", Handler: func(args string) { d.cmdRemove(strings.TrimSpace(args)) }},
 			{Name: "send", Description: "Send a message to a bot <bot> <msg>", Handler: func(args string) { d.cmdSend(strings.TrimSpace(args)) }},
-			{Name: "spawn", Description: `Spawn a new bot <name> "<goal>" [model=<m>] [workspace=<w>]`, Handler: func(args string) { d.cmdSpawn(strings.TrimSpace(args)) }},
+			{Name: "spawn", Description: `Spawn a new bot <name> "<goal>" [model=<m>] [workspace=<w>] [node=<n>]`, Handler: func(args string) { d.cmdSpawn(strings.TrimSpace(args)) }},
+			{Name: "nodes", Description: "List watchdog nodes in the cluster", Handler: func(_ string) { d.cmdNodes() }},
 			{Name: "export", Description: "Export a bot archive <bot> [path]", Handler: func(args string) { d.cmdExport(strings.TrimSpace(args)) }},
 			{Name: "workspace", Description: "Manage workspaces: list|add|remove", Handler: func(args string) { d.cmdWorkspace(strings.TrimSpace(args)) }},
 			{Name: "theme", Description: "Switch colour theme", Args: themeArgs, Handler: func(args string) { d.cmdTheme(strings.TrimSpace(args)) }},
@@ -966,7 +967,7 @@ func (d *Dashboard) cmdLogs(args string) {
 func (d *Dashboard) cmdSpawn(args string) {
 	name, goal, opts := parseSpawnArgs(args)
 	if name == "" || goal == "" {
-		d.showInfo(`usage: /spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>]`)
+		d.showInfo(`usage: /spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [node=<n>]`)
 		return
 	}
 	model := opts["model"]
@@ -1000,6 +1001,20 @@ func (d *Dashboard) cmdSpawn(args string) {
 	d.ui.StartSpinner("spawning " + name)
 	defer d.ui.StopSpinner()
 
+	if nodeName := opts["node"]; nodeName != "" {
+		if d.node == nil {
+			d.showInfo("cluster not available — cannot remote spawn")
+			return
+		}
+		botID, err := d.node.SpawnRemote(nodeName, cfg)
+		if err != nil {
+			d.showInfo(fmt.Sprintf("remote spawn error: %v", err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("spawned %s on %s (id: %s)", name, nodeName, botID))
+		return
+	}
+
 	if err := d.mgr.Create(cfg); err != nil {
 		d.showInfo(fmt.Sprintf("spawn error: %v", err))
 		return
@@ -1012,6 +1027,19 @@ func (d *Dashboard) cmdSpawn(args string) {
 		d.selectBot(d.ui.Context(), name)
 	}
 	d.showInfo(fmt.Sprintf("spawned and started %s", name))
+}
+
+func (d *Dashboard) cmdNodes() {
+	if d.node == nil {
+		d.showInfo("cluster not available")
+		return
+	}
+	names := d.node.ListWatchdogNodes()
+	if len(names) == 0 {
+		d.showInfo("no remote watchdog nodes in cluster")
+		return
+	}
+	d.showInfo("watchdog nodes: " + strings.Join(names, ", "))
 }
 
 func (d *Dashboard) cmdExport(args string) {

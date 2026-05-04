@@ -31,6 +31,8 @@ Flags:
 | `--allowed-workspaces` | Comma-separated workspaces for gateway scope |
 | `--parent` | Parent bot ID (for manually wired child bots) |
 | `--no-thinking` | Disable thinking mode |
+| `--node` | Remote watchdog node name to spawn on (default: local) |
+| `--seeds` | Comma-separated gossip seed addresses (required with `--node`) |
 
 Examples:
 
@@ -38,6 +40,7 @@ Examples:
 praxis spawn Explorer "Explore and map the codebase"
 praxis spawn Worker "Process and summarise data" --model qwen/qwen3-235b-a22b
 praxis spawn Scout "Scout environment" --workspace myapp --scope isolated
+praxis spawn Remote "Work on node-2" --node node-2 --seeds 10.0.0.2:7700
 ```
 
 After spawning, start the watchdog (or TUI) to run the bot:
@@ -158,12 +161,19 @@ Flags:
 | `--secret` | `BOT_GLOBAL_SECRET` | — | Global gossip secret |
 | `--sandbox` | `BOT_SHELL_SANDBOX` | `auto` | Sandbox mode: `auto\|bwrap\|none` |
 | `--mounts` | `BOT_SHELL_MOUNTS` | — | Extra sandbox mounts |
+| `--node-name` | `BOT_NODE_NAME` | advertise address | Human-readable node name for remote spawn targeting |
+| `--multicast-addr` | `BOT_MULTICAST_ADDR` | `239.255.13.37` | Multicast group for auto-discovery (used when no seeds) |
+| `--multicast-port` | `BOT_MULTICAST_PORT` | `19373` | Multicast port for auto-discovery |
 
 The watchdog joins the gossip cluster as `role=watchdog`. It:
 - Monitors bot processes and auto-restarts crashed bots
 - Proxies `shell` commands from bots (enforces allowlist + bwrap sandbox)
 - Relays cross-workspace messages for gateway-scoped bots
 - Handles `spawn` requests sent by bots via gossip
+- Handles `terminate` requests from bots requesting self-termination
+- Handles `remote_spawn_req` from other watchdogs for cross-node spawning
+
+When `--seeds` is not provided, the watchdog auto-discovers peers on the local network via multicast.
 
 ### tui
 
@@ -179,7 +189,7 @@ Slash commands available in the TUI:
 
 | Command | Description |
 |---|---|
-| `/spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>]` | Create and start a new bot |
+| `/spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [node=<n>]` | Create and start a new bot |
 | `/start [bot]` | Start a bot (defaults to selected) |
 | `/start-all` | Start all stopped bots |
 | `/stop [bot]` | Graceful stop — signals on next tick (defaults to selected) |
@@ -189,6 +199,12 @@ Slash commands available in the TUI:
 | `/restart [bot]` | Kill and restart (defaults to selected) |
 | `/restart-stale` | Restart all bots flagged as stale |
 | `/remove <bot>` | Kill and permanently delete a bot (removes locks + directory) |
+
+### Cluster
+
+| Command | Description |
+|---|---|
+| `/nodes` | List watchdog nodes visible in the cluster |
 
 ### Communication
 

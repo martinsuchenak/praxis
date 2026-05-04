@@ -20,6 +20,9 @@ Copy `.env.example` to `.env` and fill in at minimum `BOT_API_KEY`, `BOT_BASE_UR
 | `BOT_WATCHDOG_ADDR` | `0.0.0.0:<port>` | Gossip advertise address (override when behind NAT) |
 | `BOT_SEED_ADDRS` | — | Comma-separated seed peer addresses for cluster bootstrap |
 | `BOT_GLOBAL_SECRET` | — | Global gossip authentication secret (fallback when no workspace secret) |
+| `BOT_NODE_NAME` | advertise address | Human-readable name for this watchdog node (used for remote spawn targeting) |
+| `BOT_MULTICAST_ADDR` | `239.255.13.37` | Multicast group for auto-discovery (only used when no seeds configured) |
+| `BOT_MULTICAST_PORT` | `19373` | Multicast port for auto-discovery |
 
 ## Bot Runtime
 
@@ -67,3 +70,4 @@ Copy `.env.example` to `.env` and fill in at minimum `BOT_API_KEY`, `BOT_BASE_UR
 - API keys are never written into bot source files. Bots read `BOT_API_KEY` and `BOT_BASE_URL` from the environment at runtime.
 - `BOT_IP` is set automatically by the watchdog when launching bots — bots cannot detect their own IP.
 - Per-workspace `gossip_secret` in `workspaces.json` overrides `BOT_GLOBAL_SECRET` for bots in that workspace.
+- **Auto-discovery**: When `BOT_SEED_ADDRS` is not configured, watchdogs use UDP multicast (`239.255.13.37:19373`) to discover each other on the local network. Bots also use this same multicast channel. To disable auto-discovery, provide explicit seeds or set `BOT_MULTICAST_ADDR=""`.
