@@ -48,6 +48,7 @@ All inter-bot messages are sent via `gossip.send_to()`. Request/reply patterns u
 | `spawn_req` | request/reply | Bot → watchdog spawn request — reply: `{"status": "spawned"}` or `{"error": ...}` |
 | `remote_spawn_req` | request/reply | Watchdog → watchdog remote spawn — creates a bot on the target node |
 | `terminate_req` | request/reply | Bot → watchdog self-termination request — reply: `{"status": "terminated"}` or `{"error": ...}` |
+| `hardware_req` | request/reply | Bot requests the watchdog to route a command to a hardware device node. Fields: node, peripheral, affordance, operation, input. |
 
 ## Communication Scope
 

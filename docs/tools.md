@@ -79,3 +79,12 @@ The system prompt shows current warm memory size. Use `recall_warm_memory` when 
 | Tool | Parameters | Description |
 |---|---|---|
 | `http_request` | `url`, `method?`, `body?`, `content_type?`, `headers?`, `timeout?` | HTTP request (GET/POST/PUT/DELETE/PATCH). Returns `http_status` (real HTTP code). Respects `BOT_HTTP_ALLOWLIST`. |
+
+## Hardware
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `list_hardware_nodes` | (none) | Discover hardware nodes (ESP32, STM32, etc.) and their W3C WoT peripherals. Returns node IDs and peripheral names with affordance types. |
+| `read_property` | `node` (string), `peripheral` (string), `affordance` (string) | Read a W3C WoT property from a peripheral on a hardware node. |
+| `write_property` | `node` (string), `peripheral` (string), `affordance` (string), `value` (any) | Write a value to a W3C WoT property on a hardware node peripheral. |
+| `invoke_action` | `node` (string), `peripheral` (string), `affordance` (string), `input` (any, optional) | Invoke a W3C WoT action on a hardware node peripheral. |
