@@ -399,6 +399,30 @@ func (d *Dashboard) refreshDetailPanel() {
 		}
 	}
 
+	if d.node != nil {
+		var devices []string
+		seen := make(map[string]bool)
+		for _, gn := range d.node.Cluster().AliveNodes() {
+			if gn.Metadata.GetString("role") == "device" {
+				name := gn.Metadata.GetString("id")
+				if name == "" {
+					name = gn.ID.String()[:8]
+				}
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+				devices = append(devices, name)
+			}
+		}
+		if len(devices) > 0 {
+			sb.WriteString("\n" + d.detailPanel.Styled(theme.Primary, "━━━ devices ━━━") + "\n\n")
+			for _, name := range devices {
+				fmt.Fprintf(&sb, " %s\n", d.detailPanel.Styled(theme.Text, name))
+			}
+		}
+	}
+
 	d.detailPanel.SetContent(sb.String())
 }
 

@@ -1,6 +1,6 @@
 # Praxis
 
-Autonomous, self-evolving bots powered by LLMs. Each bot is a single self-contained script that can reason, build capabilities, communicate with peers, spawn children, modify its own behavior, and migrate to other machines.
+Autonomous, self-evolving bots powered by LLMs. Each bot is a single self-contained script that can reason, build capabilities, communicate with peers, spawn children, modify its own behavior, migrate to other machines, and **interact with physical hardware** via W3C Web of Things device nodes.
 
 > Built on [Scriptling](https://github.com/paularlott/scriptling) — a Python-like scripting language with a Go backend.
 
@@ -21,6 +21,18 @@ praxis watchdog
 
 # or use the interactive TUI
 praxis tui
+```
+
+## Hardware Devices
+
+Hardware nodes (ESP32, STM32, etc.) running [praxis-hardware](https://github.com/paularlott/praxis-hardware) join the gossip cluster as autonomous peripherals. Bots discover them via `list_hardware_nodes` and interact through W3C WoT affordances (`read_property`, `write_property`, `invoke_action`). The watchdog routes commands to nodes after verifying the gossip secret.
+
+```python
+# Bot-side: discover and control hardware
+list_hardware_nodes()                                              # shows all hardware nodes + peripherals
+read_property(node="test-node", peripheral="temp", affordance="temperature")
+write_property(node="test-node", peripheral="led_red", affordance="brightness", value=128)
+invoke_action(node="test-node", peripheral="buzzer", affordance="beep")
 ```
 
 ## Documentation

@@ -260,6 +260,8 @@ func (n *Node) handleBotMsg(gn *gossip.Node, pkt *gossip.Packet) (interface{}, e
 		return n.handleRemoteSpawnReq(gn, pkt)
 	case TypeTerminateReq:
 		return n.handleTerminateReq(gn, pkt)
+	case TypeHardwareReq:
+		return n.handleHardwareReq(gn, pkt)
 	default:
 		n.log.Warn("bot_msg: unknown type", "type", hdr.Type)
 		return &ShellReply{Error: "unknown message type: " + hdr.Type, ExitCode: 1}, nil

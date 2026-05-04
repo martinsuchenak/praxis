@@ -130,14 +130,18 @@ func TestValidSecretUnknownBot(t *testing.T) {
 		t.Error("expected invalid: unknown bot + bad global secret")
 	}
 
-	// Unknown bot with no global secret — must reject unless AuthDisabled.
+	// Unknown bot with no global secret and empty incoming secret — no security configured, allow.
 	n2 := testNode(t, root, testutil.NewMockSandbox(), "")
 	n2.cfg.AuthDisabled = false
-	if n2.validSecret("ghost", "") {
-		t.Error("expected invalid: unknown bot with no secret and auth not disabled")
+	if !n2.validSecret("ghost", "") {
+		t.Error("expected valid: unknown bot with no security configured")
+	}
+	// Unknown bot with no global secret but non-empty incoming secret — reject.
+	if n2.validSecret("ghost", "haxxor") {
+		t.Error("expected invalid: unknown bot sending unexpected secret")
 	}
 	n2.cfg.AuthDisabled = true
-	if !n2.validSecret("ghost", "") {
+	if !n2.validSecret("ghost", "anything") {
 		t.Error("expected valid: unknown bot with AuthDisabled")
 	}
 }
@@ -866,6 +870,83 @@ func TestHandleBotMsgDispatchTerminate(t *testing.T) {
 	}
 	if tr.Status != "terminated" {
 		t.Errorf("status: got %q want %q", tr.Status, "terminated")
+	}
+}
+
+func TestHandleBotMsgDispatchHardware(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &HardwareRequest{
+		Type:       TypeHardwareReq,
+		Node:       "sensor-hub",
+		Peripheral: "temp",
+		Affordance: "temp_temperature",
+		Operation:  "readproperty",
+	})
+	reply, err := n.handleBotMsg(nil, pkt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hr, ok := reply.(*HardwareReply)
+	if !ok {
+		t.Fatalf("expected *HardwareReply, got %T", reply)
+	}
+	if hr.Error == "" {
+		t.Error("expected error: no live cluster to reach device")
+	}
+}
+
+func TestHandleHardwareReqBadUnmarshal(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	reply, err := n.handleHardwareReq(nil, testCorruptPacket(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reply.(*HardwareReply).Error == "" {
+		t.Error("expected error for corrupt packet")
+	}
+}
+
+func TestHandleHardwareReqPeripheralNotFound(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &HardwareRequest{
+		Type:       TypeHardwareReq,
+		Node:       "nonexistent",
+		Peripheral: "led",
+		Affordance: "led_state",
+		Operation:  "readproperty",
+	})
+	reply, err := n.handleHardwareReq(nil, pkt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hr := reply.(*HardwareReply)
+	if hr.Error == "" {
+		t.Error("expected error for missing device")
+	}
+}
+
+func TestHandleHardwareReqInvalidSecret(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cr3t")
+	n.cfg.AuthDisabled = false
+
+	pkt := testPacket(t, &HardwareRequest{
+		Type:       TypeHardwareReq,
+		Node:       "sensor-hub",
+		Peripheral: "led",
+		Affordance: "led_state",
+		Operation:  "readproperty",
+		Secret:     "wrong",
+	})
+	reply, _ := n.handleHardwareReq(nil, pkt)
+	if reply.(*HardwareReply).Error == "" {
+		t.Error("expected error for invalid secret")
 	}
 }
 

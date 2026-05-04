@@ -1087,6 +1087,87 @@ def _list_bots(args):
     return json.dumps(result)
 
 
+def _list_hardware_nodes(_args):
+    result = []
+    seen = set()
+    for n in cluster.alive_nodes():
+        meta = n.get("metadata", {})
+        if meta.get("role") != "device":
+            continue
+        node_id = meta.get("id", n["id"][:16])
+        if node_id in seen:
+            continue
+        seen.add(node_id)
+        entry = {
+            "id": node_id,
+        }
+        try:
+            td_resp = _hardware_command(node_id, "__td__", "", "")
+            td_data = json.loads(td_resp)
+            if "value" in td_data:
+                td = td_data["value"]
+                peripherals = td.get("peripherals", {})
+                if peripherals:
+                    entry["peripherals"] = {}
+                    for pname, pdata in peripherals.items():
+                        affordances = []
+                        for key in pdata.get("properties", {}).keys():
+                            short = key[len(pname) + 1:] if key.startswith(pname + "_") else key
+                            readable = pdata["properties"][key].get("readOnly", False)
+                            affordances.append({"name": short, "type": "property", "readOnly": readable})
+                        for key in pdata.get("actions", {}).keys():
+                            short = key[len(pname) + 1:] if key.startswith(pname + "_") else key
+                            affordances.append({"name": short, "type": "action"})
+                        if affordances:
+                            entry["peripherals"][pname] = affordances
+        except Exception as e:
+            entry["td_error"] = str(e)
+        result.append(entry)
+    return json.dumps(result)
+
+
+def _hardware_command(node, peripheral, affordance, operation, input_val=None):
+    watchdog = _find_watchdog()
+    if watchdog is None:
+        return "Error: watchdog not available"
+    req_payload = {
+        "type": "hardware_req",
+        "node": node,
+        "peripheral": peripheral,
+        "affordance": affordance,
+        "operation": operation,
+    }
+    if input_val is not None:
+        req_payload["input"] = input_val
+    if GOSSIP_SECRET:
+        req_payload["_secret"] = GOSSIP_SECRET
+    try:
+        resp = cluster.send_request(watchdog["id"], GOSSIP_MSG, req_payload)
+        if resp is None:
+            return "Error: no response from watchdog"
+        return json.dumps(resp)
+    except Exception as e:
+        return "Error: " + str(e)
+
+
+def _read_property(args):
+    return _hardware_command(
+        args["node"], args["peripheral"], args["affordance"], "readproperty"
+    )
+
+
+def _write_property(args):
+    return _hardware_command(
+        args["node"], args["peripheral"], args["affordance"], "writeproperty", args.get("value")
+    )
+
+
+def _invoke_action(args):
+    return _hardware_command(
+        args["node"], args["peripheral"], args["affordance"], "invokeaction", args.get("input")
+    )
+
+
 def _spawn_bot(args):
     new_name = args.get("name") or "bot-" + str(uuid.uuid4())[:8]
     if not _is_valid_name(new_name):
@@ -1446,6 +1527,10 @@ tools.add("send_message", "Send a direct message to a bot by ID", {"recipient": 
 tools.add("complete_task", "Report task completion to your parent bot", {"parent_bot": "string", "result": "string", "task_id": "string?"}, _wrap_tool("complete_task", _complete_task))
 tools.add("read_messages", "Read your unread messages", {}, _wrap_tool("read_messages", _read_messages))
 tools.add("list_bots", "List all bots visible in the swarm", {}, _wrap_tool("list_bots", _list_bots))
+    tools.add("list_hardware_nodes", "Discover hardware nodes (ESP32, STM32, etc.) and their W3C Web of Things (WoT) peripherals. Each node exposes peripherals with properties (read/write) and actions (invoke). Call this first.", {}, _wrap_tool("list_hardware_nodes", _list_hardware_nodes))
+    tools.add("read_property", "Read a W3C WoT property from a peripheral on a hardware node. Returns the current value.", {"node": "string", "peripheral": "string", "affordance": "string"}, _wrap_tool("read_property", _read_property))
+    tools.add("write_property", "Write a value to a W3C WoT property on a peripheral. 'node' is the hardware node ID, 'peripheral' is the peripheral name, 'affordance' is the property name, 'value' is the new value.", {"node": "string", "peripheral": "string", "affordance": "string", "value": "any"}, _wrap_tool("write_property", _write_property))
+    tools.add("invoke_action", "Invoke a W3C WoT action on a peripheral. 'node' is the hardware node ID, 'peripheral' is the peripheral name, 'affordance' is the action name. Optional 'input' for action parameters.", {"node": "string", "peripheral": "string", "affordance": "string", "input": "any?"}, _wrap_tool("invoke_action", _invoke_action))
 tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?", "task_id": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
 tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
 tools.add("evolve_brain", "Rewrite your brain (hot memory, max 8 KB). Include a reason. Archive older content to warm memory first if brain is too large.", {"content": "string", "reason": "string?"}, _wrap_tool("evolve_brain", _evolve_brain))
@@ -1568,6 +1653,11 @@ def _build_system_prompt():
     prompt += "- A task_complete report — incorporate the result and continue.\n"
     prompt += "Never wait for further clarification before starting. If the request is clear enough to attempt, attempt it.\n"
     prompt += "Do NOT log that you are 'awaiting' or 'unsure whether to proceed' — just proceed.\n\n"
+    prompt += "## Hardware Devices\n"
+    prompt += "Hardware nodes (ESP32, STM32, etc.) join the cluster as W3C Web of Things (WoT) devices. Each node has peripherals that expose properties (read/write) and actions (invoke).\n"
+    prompt += "Use `list_hardware_nodes()` to discover nodes and their peripherals.\n"
+    prompt += "Parameters: `node` = hardware node ID (e.g. \"test-node\"), `peripheral` = peripheral name (e.g. \"led_red\", \"temp\"), `affordance` = property or action name (e.g. \"brightness\", \"beep\").\n"
+    prompt += "Examples: `read_property(node=\"test-node\", peripheral=\"temp\", affordance=\"temperature\")` or `write_property(node=\"test-node\", peripheral=\"led_red\", affordance=\"brightness\", value=128)` or `invoke_action(node=\"test-node\", peripheral=\"buzzer\", affordance=\"beep\")`.\n\n"
     prompt += "## Communication scope\n"
     prompt += "Your scope controls which bots you can see and message. Your scope is shown in each tick message.\n"
     prompt += "- **open**: You see all bots. Send messages directly.\n"

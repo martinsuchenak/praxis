@@ -14,6 +14,7 @@ const (
 	TypeRelayReq       = "relay_req"
 	TypeRemoteSpawnReq = "remote_spawn_req"
 	TypeTerminateReq   = "terminate_req"
+	TypeHardwareReq    = "hardware_req"
 )
 
 // botRequest is the discriminator header — only "type" is decoded first.
@@ -86,4 +87,19 @@ type TerminateRequest struct {
 type TerminateReply struct {
 	Status string `msgpack:"status,omitempty"`
 	Error  string `msgpack:"error,omitempty"`
+}
+
+type HardwareRequest struct {
+	Type       string      `msgpack:"type"`
+	Node       string      `msgpack:"node"`
+	Peripheral string      `msgpack:"peripheral"`
+	Affordance string      `msgpack:"affordance"`
+	Operation  string      `msgpack:"operation"`
+	Input      interface{} `msgpack:"input,omitempty"`
+	Secret     string      `msgpack:"_secret"`
+}
+
+type HardwareReply struct {
+	Value interface{} `msgpack:"value"`
+	Error string      `msgpack:"error,omitempty"`
 }
