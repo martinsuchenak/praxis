@@ -59,6 +59,28 @@ Copy `.env.example` to `.env` and fill in at minimum `BOT_API_KEY`, `BOT_BASE_UR
 |---|---|---|
 | `BOT_MODELS_DIR` | `<project_dir>/models` | Directory containing `.gguf` model files. If set and the directory exists, local inference via `local_generate` is available to all bots. |
 
+### Downloading Models
+
+Use the bundled Taskfile to download SmolLM2 instruct models (Q8_0 quantization):
+
+```bash
+task models:download
+```
+
+This downloads three sizes to `models/`:
+
+| Model | File | Size |
+|---|---|---|
+| SmolLM2 135M | `SmolLM2-135M-Instruct-Q8_0.gguf` | ~145 MB |
+| SmolLM2 360M | `SmolLM2-360M-Instruct-Q8_0.gguf` | ~386 MB |
+| SmolLM2 1.7B | `SmolLM2-1.7B-Instruct-Q8_0.gguf` | ~1.8 GB |
+| Qwen3 1.7B | `Qwen_Qwen3-1.7B-Q8_0.gguf` | ~2.2 GB |
+| Llama 3.2 1B | `Llama-3.2-1B-Instruct-Q8_0.gguf` | ~1.3 GB |
+
+To clean up: `task models:clean`
+
+These are small instruct models suitable for text classification, formatting, short answers, and triage — not complex reasoning or code generation.
+
 ## Praxis
 
 | Variable | Default | Description |
