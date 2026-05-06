@@ -30,7 +30,7 @@ Flags:
 | `--scope` | Peer visibility: `open\|isolated\|family\|gateway` |
 | `--allowed-workspaces` | Comma-separated workspaces for gateway scope |
 | `--parent` | Parent bot ID (for manually wired child bots) |
-| `--no-thinking` | Disable thinking mode |
+| `--no-thinking` | Disable thinking mode (respects per-model config in `models.json`) |
 | `--node` | Remote watchdog node name to spawn on (default: local) |
 | `--seeds` | Comma-separated gossip seed addresses (required with `--node`) |
 
@@ -189,7 +189,7 @@ Slash commands available in the TUI:
 
 | Command | Description |
 |---|---|
-| `/spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [node=<n>]` | Create and start a new bot |
+| `/spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [thinking=<true|false>] [node=<n>]` | Create and start a new bot |
 | `/start [bot]` | Start a bot (defaults to selected) |
 | `/start-all` | Start all stopped bots |
 | `/stop [bot]` | Graceful stop — signals on next tick (defaults to selected) |

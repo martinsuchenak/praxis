@@ -61,6 +61,21 @@ The scriptling gossip library hardcodes `codec.NewVmihailencoMsgpackCodec()` at 
 
 When editing `botcore.py`: changes affect all newly spawned bots. Existing bots keep their copy. The file is embedded at build time via `embed.go`.
 
+## Thinking Mode
+
+Each model's thinking/reasoning behavior is configured in `models.json` via the `thinking` or `thinking_template` field. The bot looks up the model's entry in `CONFIG["models"]` at runtime.
+
+- `"thinking_template": "glm"` — reference a built-in provider template (qwen, ollama, ollama_compat, openai, anthropic, glm, gemini_flash, mistral)
+- `"thinking": {...}` — inline config, overrides template if both present
+- Neither field — no thinking control, prompt sent as-is
+
+Built-in templates are defined in `_THINKING_TEMPLATES` dict in `botcore.py`. Resolution: inline `thinking` > `thinking_template` > none.
+
+- `"mode": "prefix"` — prepends a text prefix (e.g., `/no_think`) to the prompt to disable thinking
+- `"mode": "json_body"` — passes extra JSON body params (e.g., `{"thinking": {"type": "disabled"}}`) to the API call via `extra_body`
+
+The `_apply_thinking(model_id, prompt, enabled)` helper in `botcore.py` handles all cases. It is used in `_query_model`, the main tick loop, and `_consensus_llm_call`. The per-bot `BotConfig.Thinking` flag (set via `--no-thinking` on spawn) determines whether thinking is on or off; the model's config determines *how* it's applied.
+
 ## Conventions
 
 - No comments in Go code unless explicitly requested.

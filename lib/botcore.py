@@ -68,6 +68,48 @@ AVAILABLE_MODELS = CONFIG.get("models", []) or []
 LOCAL_MODELS = CONFIG.get("local_models", []) or []
 MODELS_DIR = CONFIG.get("models_dir", "")
 
+_MODELS_BY_ID = {m["id"]: m for m in AVAILABLE_MODELS if isinstance(m, dict)}
+
+_THINKING_TEMPLATES = {
+    "qwen": {"mode": "prefix", "prefix": "/no_think"},
+    "ollama": {"mode": "json_body", "body_on": {"think": True}, "body_off": {"think": False}},
+    "ollama_compat": {"mode": "json_body", "body_on": {"reasoning_effort": "high"}, "body_off": {"reasoning_effort": "none"}},
+    "openai": {"mode": "json_body", "body_on": {"reasoning_effort": "high"}, "body_off": {"reasoning_effort": "none"}},
+    "anthropic": {"mode": "json_body", "body_on": {"thinking": {"type": "adaptive"}}, "body_off": {"thinking": {"type": "disabled"}}},
+    "glm": {"mode": "json_body", "body_on": {"thinking": {"type": "enabled", "clear_thinking": False}}, "body_off": {"thinking": {"type": "disabled"}}},
+    "gemini_flash": {"mode": "json_body", "body_on": {"generationConfig": {"thinkingConfig": {"thinkingBudget": 8192}}}, "body_off": {"generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}}},
+    "mistral": {"mode": "json_body", "body_on": {"reasoning_effort": "high"}, "body_off": {"reasoning_effort": "none"}},
+}
+
+
+def _get_thinking_config(model_id):
+    entry = _MODELS_BY_ID.get(model_id)
+    if not entry:
+        return None
+    if "thinking" in entry:
+        return entry["thinking"]
+    tpl_name = entry.get("thinking_template", "")
+    if tpl_name and tpl_name in _THINKING_TEMPLATES:
+        return _THINKING_TEMPLATES[tpl_name]
+    return None
+
+
+def _apply_thinking(model_id, prompt, enabled):
+    cfg = _get_thinking_config(model_id)
+    if cfg is None:
+        return prompt, {}
+    mode = cfg.get("mode", "")
+    if not enabled:
+        if mode == "prefix":
+            return cfg.get("prefix", "/no_think") + "\n" + prompt, {}
+        if mode == "json_body":
+            return prompt, cfg.get("body_off", {})
+    else:
+        if mode == "json_body":
+            return prompt, cfg.get("body_on", {})
+    return prompt, {}
+
+
 GOSSIP_MSG = gossip.MSG_USER
 
 
@@ -473,14 +515,15 @@ def _build_file_listing():
 
 
 def _consensus_llm_call(question, model, b_url, a_key, queue_name):
-    """Background worker: makes the consensus LLM call and posts the answer to a named Queue."""
     import scriptling.ai as _ai
     import scriptling.runtime.sync as _sync
     try:
         _c = _ai.Client(b_url, api_key=a_key)
-        _ans = _c.ask(model, "/no_think\n" + question,
-                      system_prompt="Answer briefly and concisely in one sentence.",
-                      max_tokens=256)
+        _prompt, _extra = _apply_thinking(model, question, False)
+        _kwargs = {"system_prompt": "Answer briefly and concisely in one sentence.", "max_tokens": 256}
+        if _extra:
+            _kwargs["extra_body"] = _extra
+        _ans = _c.ask(model, _prompt, **_kwargs)
     except Exception as _e:
         _ans = "Error: " + str(_e)
     _sync.Queue(queue_name, maxsize=1).put(_ans)
@@ -1183,6 +1226,7 @@ def _spawn_bot(args):
         default_brain += "Task ID: " + task_id + "\nWhen done, call complete_task(parent_bot=\"" + BOT_ID + "\", task_id=\"" + task_id + "\", result=...) to report results.\n"
     new_brain = args.get("brain") or default_brain
     new_model = args.get("model") or CONFIG["model"]
+    new_thinking = args.get("thinking", thinking_enabled)
 
     watchdog = _find_watchdog()
     if watchdog is None:
@@ -1195,7 +1239,7 @@ def _spawn_bot(args):
         "goal": new_goal,
         "model": new_model,
         "brain": new_brain,
-        "thinking": thinking_enabled,
+        "thinking": new_thinking,
         "_secret": GOSSIP_SECRET_OVERRIDE or "",
     }
     if WORKSPACE_NAME:
@@ -1256,7 +1300,8 @@ def _spawn_hybrid(args):
     merged += "## From " + BOT_ID + ":\n" + own_brain + "\n\n"
     merged += "## From " + other_id + ":\n" + other_brain + "\n"
     new_model = args.get("model") or CONFIG["model"]
-    return _spawn_bot({"name": new_name, "goal": new_goal, "brain": merged, "model": new_model})
+    new_thinking = args.get("thinking", thinking_enabled)
+    return _spawn_bot({"name": new_name, "goal": new_goal, "brain": merged, "model": new_model, "thinking": new_thinking})
 
 
 def _evolve_brain(args):
@@ -1333,10 +1378,13 @@ def _query_model(args):
     system = args.get("system", "")
     use_thinking = args.get("thinking", True)
     try:
-        final_prompt = prompt if use_thinking else "/no_think\n" + prompt
+        final_prompt, extra_body = _apply_thinking(target_model, prompt, use_thinking)
+        kwargs = {"max_tokens": 4096}
         if system:
-            return client.ask(target_model, final_prompt, system_prompt=system, max_tokens=4096)
-        return client.ask(target_model, final_prompt, max_tokens=4096)
+            kwargs["system_prompt"] = system
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        return client.ask(target_model, final_prompt, **kwargs)
     except Exception as e:
         return "Error querying " + target_model + ": " + str(e)
 
@@ -1513,14 +1561,14 @@ def _memory_forget(args):
 
 
 tools.add("read_file", "Read a file in your directory", {"path": "string"}, _wrap_tool("read_file", _read_file))
-tools.add("read_file_range", "Read a line range from a file (1-indexed)", {"path": "string", "start": "int", "end": "int?"}, _wrap_tool("read_file_range", _read_file_range))
+tools.add("read_file_range", "Read a line range from a file (1-indexed)", {"path": "string", "start": "number", "end": "number?"}, _wrap_tool("read_file_range", _read_file_range))
 tools.add("write_file", "Write a file to your directory. Include a brief description of what the file contains.", {"path": "string", "content": "string", "description": "string?"}, _wrap_tool("write_file", _write_file))
 tools.add("append_file", "Append content to an existing file (creates it if absent)", {"path": "string", "content": "string"}, _wrap_tool("append_file", _append_file))
 tools.add("delete_file", "Delete a file from your directory", {"path": "string"}, _wrap_tool("delete_file", _delete_file))
 tools.add("replace_in_file", "Replace text in a file (more efficient than read+write for small edits)", {"path": "string", "old": "string", "new": "string"}, _wrap_tool("replace_in_file", _replace_in_file))
 tools.add("list_dir", "List files in a directory", {"path": "string?"}, _wrap_tool("list_dir", _list_dir))
-tools.add("search", "Search file contents with a regex pattern", {"pattern": "string", "path": "string?", "glob": "string?", "ignore_case": "bool?"}, _wrap_tool("search", _search))
-tools.add("shell", "Run a shell command via the command proxy (sandboxed, no network tools)", {"command": "string", "cwd": "string?", "timeout": "int?"}, _wrap_tool("shell", _shell))
+tools.add("search", "Search file contents with a regex pattern", {"pattern": "string", "path": "string?", "glob": "string?", "ignore_case": "boolean?"}, _wrap_tool("search", _search))
+tools.add("shell", "Run a shell command via the command proxy (sandboxed, no network tools)", {"command": "string", "cwd": "string?", "timeout": "number?"}, _wrap_tool("shell", _shell))
 tools.add("terminate", "Request the watchdog to terminate you. Use when your goal is complete or you are no longer needed.", {}, _wrap_tool("terminate", _terminate))
 tools.add("run_script", "Run a scriptling script", {"path": "string", "args": "string?"}, _wrap_tool("run_script", _run_script))
 tools.add("send_message", "Send a direct message to a bot by ID", {"recipient": "string", "content": "string"}, _wrap_tool("send_message", _send_message))
@@ -1529,22 +1577,22 @@ tools.add("read_messages", "Read your unread messages", {}, _wrap_tool("read_mes
 tools.add("list_bots", "List all bots visible in the swarm", {}, _wrap_tool("list_bots", _list_bots))
     tools.add("list_hardware_nodes", "Discover hardware nodes (ESP32, STM32, etc.) and their W3C Web of Things (WoT) peripherals. Each node exposes peripherals with properties (read/write) and actions (invoke). Call this first.", {}, _wrap_tool("list_hardware_nodes", _list_hardware_nodes))
     tools.add("read_property", "Read a W3C WoT property from a peripheral on a hardware node. Returns the current value.", {"node": "string", "peripheral": "string", "affordance": "string"}, _wrap_tool("read_property", _read_property))
-    tools.add("write_property", "Write a value to a W3C WoT property on a peripheral. 'node' is the hardware node ID, 'peripheral' is the peripheral name, 'affordance' is the property name, 'value' is the new value.", {"node": "string", "peripheral": "string", "affordance": "string", "value": "any"}, _wrap_tool("write_property", _write_property))
-    tools.add("invoke_action", "Invoke a W3C WoT action on a peripheral. 'node' is the hardware node ID, 'peripheral' is the peripheral name, 'affordance' is the action name. Optional 'input' for action parameters.", {"node": "string", "peripheral": "string", "affordance": "string", "input": "any?"}, _wrap_tool("invoke_action", _invoke_action))
-tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?", "task_id": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
-tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
+    tools.add("write_property", "Write a value to a W3C WoT property on a peripheral. 'node' is the hardware node ID, 'peripheral' is the peripheral name, 'affordance' is the property name, 'value' is the new value.", {"node": "string", "peripheral": "string", "affordance": "string", "value": "string"}, _wrap_tool("write_property", _write_property))
+    tools.add("invoke_action", "Invoke a W3C WoT action on a peripheral. 'node' is the hardware node ID, 'peripheral' is the peripheral name, 'affordance' is the action name. Optional 'input' for action parameters.", {"node": "string", "peripheral": "string", "affordance": "string", "input": "string?"}, _wrap_tool("invoke_action", _invoke_action))
+tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?", "thinking": "boolean?", "task_id": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
+tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?", "thinking": "boolean?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
 tools.add("evolve_brain", "Rewrite your brain (hot memory, max 8 KB). Include a reason. Archive older content to warm memory first if brain is too large.", {"content": "string", "reason": "string?"}, _wrap_tool("evolve_brain", _evolve_brain))
 tools.add("recall_warm_memory", "Search warm memory (memory.md) for relevant content. Pass a query to filter, or omit to read all.", {"query": "string?"}, _wrap_tool("recall_warm_memory", _recall_warm_memory))
 tools.add("archive_to_warm_memory", "Move content from your brain to warm memory (memory.md) under an optional label. Use before shrinking brain.md.", {"content": "string", "label": "string?"}, _wrap_tool("archive_to_warm_memory", _archive_to_warm_memory))
 tools.add("update_warm_memory", "Overwrite or append to warm memory directly.", {"content": "string", "action": "string?"}, _wrap_tool("update_warm_memory", _update_warm_memory))
-tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "bool?"}, _wrap_tool("query_model", _query_model))
+tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "boolean?"}, _wrap_tool("query_model", _query_model))
 tools.add("list_models", "List available models with descriptions, costs, and strengths", {}, _wrap_tool("list_models", _list_models))
-tools.add("local_generate", "Run a local GGUF model for fast, private inference. These are small instruct models — use only for simple tasks like classification, formatting, short answers, text extraction, or quick triage. NOT for complex reasoning, coding, or long-form generation.", {"model": "string", "prompt": "string", "max_tokens": "int?", "strategy": "string?", "temperature": "float?", "system_prompt": "string?", "stats": "bool?"}, _wrap_tool("local_generate", _local_generate))
+tools.add("local_generate", "Run a local GGUF model for fast, private inference. These are small instruct models — use only for simple tasks like classification, formatting, short answers, text extraction, or quick triage. NOT for complex reasoning, coding, or long-form generation.", {"model": "string", "prompt": "string", "max_tokens": "number?", "strategy": "string?", "temperature": "number?", "system_prompt": "string?", "stats": "boolean?"}, _wrap_tool("local_generate", _local_generate))
 tools.add("list_local_models", "List available local GGUF models for private inference", {}, _wrap_tool("list_local_models", _list_local_models))
-tools.add("http_request", "HTTP request (GET/POST/PUT/DELETE/PATCH) with optional body and headers", {"url": "string", "method": "string?", "body": "string?", "content_type": "string?", "headers": "string?", "timeout": "int?"}, _wrap_tool("http_request", _http_request))
-tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "int?"}, _wrap_tool("ask_consensus", _ask_consensus))
-tools.add("memory_remember", "Store a fact, lesson, or observation in persistent memory. Include a reason explaining why this is worth remembering.", {"content": "string", "type": "string?", "importance": "float?", "reason": "string?"}, _wrap_tool("memory_remember", _memory_remember))
-tools.add("memory_recall", "Search memories by keyword and similarity, or call with no args to load your preferences and top memories", {"query": "string?", "limit": "int?", "type": "string?"}, _wrap_tool("memory_recall", _memory_recall))
+tools.add("http_request", "HTTP request (GET/POST/PUT/DELETE/PATCH) with optional body and headers", {"url": "string", "method": "string?", "body": "string?", "content_type": "string?", "headers": "string?", "timeout": "number?"}, _wrap_tool("http_request", _http_request))
+tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "number?"}, _wrap_tool("ask_consensus", _ask_consensus))
+tools.add("memory_remember", "Store a fact, lesson, or observation in persistent memory. Include a reason explaining why this is worth remembering.", {"content": "string", "type": "string?", "importance": "number?", "reason": "string?"}, _wrap_tool("memory_remember", _memory_remember))
+tools.add("memory_recall", "Search memories by keyword and similarity, or call with no args to load your preferences and top memories", {"query": "string?", "limit": "number?", "type": "string?"}, _wrap_tool("memory_recall", _memory_recall))
 tools.add("memory_forget", "Remove a memory by ID", {"id": "string"}, _wrap_tool("memory_forget", _memory_forget))
 
 
@@ -1613,6 +1661,7 @@ def _build_system_prompt():
         prompt += "## Available Models\n"
         prompt += "You are running on: " + model_name + "\n\n"
         prompt += "Use `query_model(model, prompt)` for one-shot calls or `model=` in spawn_bot/spawn_hybrid to assign a model to a child. Choose a model that fits the child's task — don't default to your own model if another is better suited.\n\n"
+        prompt += "When spawning children, set `thinking=true` for tasks that require deep reasoning or multi-step planning. Set `thinking=false` for simple, well-defined tasks (triage, formatting, short answers) to reduce cost and latency. If unsure, match the child's thinking to the complexity of its goal.\n\n"
         for m in AVAILABLE_MODELS:
             prompt += "- **" + m["id"] + "**"
             if m.get("label"):
@@ -1676,6 +1725,12 @@ def _build_system_prompt():
     return prompt
 
 
+_thinking_cfg = _get_thinking_config(model_name)
+_agent_extra_body = None
+if _thinking_cfg and _thinking_cfg.get("mode") == "json_body":
+    _agent_extra_body = _thinking_cfg.get("body_on", {}) if thinking_enabled else _thinking_cfg.get("body_off", {})
+_log("DEBUG", "thinking config: model=" + model_name + " thinking=" + str(thinking_enabled) + " cfg=" + str(_thinking_cfg) + " extra_body=" + str(_agent_extra_body))
+
 bot_agent = agent.Agent(
     client,
     tools=tools,
@@ -1683,6 +1738,7 @@ bot_agent = agent.Agent(
     model=model_name,
     max_tokens=AGENT_MAX_TOKENS,
     compaction_threshold=AGENT_COMPACTION_THRESHOLD,
+    extra_body=_agent_extra_body,
 )
 bot_agent.request_timeout_ms = AGENT_REQUEST_TIMEOUT_MS
 
@@ -1776,7 +1832,7 @@ while True:
         try:
             sys_prompt = _build_system_prompt()
             bot_agent.system_prompt = sys_prompt
-            trigger_msg = tick_msg if thinking_enabled else "/no_think\n" + tick_msg
+            trigger_msg, _ = _apply_thinking(model_name, tick_msg, thinking_enabled)
             if LOG_VERBOSE:
                 debug_dir = os.path.join(BOT_DIR, "debug")
                 if not os.path.exists(debug_dir):

@@ -50,6 +50,7 @@ Fitness counters are visible in the tick message so the LLM can reason about its
 Options:
 - `model=` — run the child on a different model than the parent
 - `brain=` — give the child a custom starting brain
+- `thinking=` — set thinking mode (`true`/`false`, defaults to parent's setting)
 - `task_id=` — the child's brain will include instructions to call `complete_task` when done
 
 Each bot can create at most 10 children.
@@ -73,7 +74,7 @@ Poll `n` peers (any odd number) on a question:
 ask_consensus(question="Should I prioritise scraping or analysis?", n=3)
 ```
 
-Each peer answers independently using its own LLM (without thinking mode). The result includes all individual responses, the majority answer, and the agreement ratio. Both the bot and its peers store the exchange in memory.
+Each peer answers independently using its own LLM (with thinking disabled per the model's `models.json` config). The result includes all individual responses, the majority answer, and the agreement ratio. Both the bot and its peers store the exchange in memory.
 
 ## Multi-Model Usage
 
@@ -81,6 +82,6 @@ Every bot knows its own model. If a `models.json` catalog is configured, bots al
 
 **Model as genome** — `spawn_bot` and `spawn_hybrid` accept an optional `model=` parameter. Children can run on a different model than their parent. Combined with fitness tracking, this enables natural model selection over generations.
 
-**Per-task model routing** — `query_model(model, prompt, system?, thinking?)` sends a one-shot prompt to any model available on the same `base_url`. Useful for cheap summarisation or specialised tasks where the main model is overkill.
+**Per-task model routing** — `query_model(model, prompt, system?, thinking?)` sends a one-shot prompt to any model available on the same `base_url`. Useful for cheap summarisation or specialised tasks where the main model is overkill. Thinking is controlled per-model via the `models.json` thinking config.
 
 See [models.md](models.md) for catalog setup.

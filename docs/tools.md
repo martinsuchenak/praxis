@@ -40,15 +40,15 @@ Files outside the bot's own directory are blocked by the scriptling `--allowed-p
 
 | Tool | Parameters | Description |
 |---|---|---|
-| `spawn_bot` | `goal`, `name?`, `brain?`, `model?`, `task_id?` | Create a child bot. Max 10 children per bot. |
-| `spawn_hybrid` | `other_bot`, `goal`, `name?`, `model?` | Crossover with another bot's brain and spawn a child. |
+| `spawn_bot` | `goal`, `name?`, `brain?`, `model?`, `thinking?`, `task_id?` | Create a child bot. Max 10 children per bot. |
+| `spawn_hybrid` | `other_bot`, `goal`, `name?`, `model?`, `thinking?` | Crossover with another bot's brain and spawn a child. |
 
 ## Cognition
 
 | Tool | Parameters | Description |
 |---|---|---|
 | `evolve_brain` | `content`, `reason?` | Rewrite the hot brain layer (8 KB cap). Takes effect next tick. |
-| `query_model` | `model`, `prompt`, `system?`, `thinking?` | One-shot call to any model for a subtask. |
+| `query_model` | `model`, `prompt`, `system?`, `thinking?` | One-shot call to any model. Thinking controlled per-model via `models.json`. |
 | `list_models` | — | List available models from the catalog. |
 | `local_generate` | `model`, `prompt`, `max_tokens?`, `strategy?`, `temperature?`, `system_prompt?`, `stats?` | Run a local GGUF model for fast, private inference. Small instruct models only — use for classification, formatting, short answers, triage. Not for complex reasoning or code. |
 | `list_local_models` | — | List available local GGUF model files. |

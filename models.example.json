@@ -5,7 +5,8 @@
     "description": "Small, fast model. Good for quick fixes, summaries, formatting, and simple tasks.",
     "cost": "low",
     "concurrency": 3,
-    "strengths": ["fast", "simple tasks", "formatting", "summaries", "quick fixes"]
+    "strengths": ["fast", "simple tasks", "formatting", "summaries", "quick fixes"],
+    "thinking_template": "qwen"
   },
   {
     "id": "qwen/qwen3-235b-a22b",
@@ -13,6 +14,46 @@
     "description": "Large reasoning model for complex analysis, architecture decisions, and multi-step planning.",
     "cost": "high",
     "concurrency": 1,
-    "strengths": ["reasoning", "complex analysis", "planning", "architecture", "code generation"]
+    "strengths": ["reasoning", "complex analysis", "planning", "architecture", "code generation"],
+    "thinking_template": "qwen"
+  },
+  {
+    "id": "glm-5",
+    "label": "GLM 5",
+    "description": "General-purpose model with strong tool calling and instruction following.",
+    "cost": "medium",
+    "concurrency": 2,
+    "strengths": ["tool calling", "instruction following", "logic loops"],
+    "thinking_template": "glm"
+  },
+  {
+    "id": "claude-sonnet-4-6",
+    "label": "Claude Sonnet 4.6",
+    "description": "Strong general-purpose reasoning with adaptive thinking.",
+    "cost": "high",
+    "concurrency": 2,
+    "strengths": ["reasoning", "writing", "analysis", "coding"],
+    "thinking_template": "anthropic"
+  },
+  {
+    "id": "granite-4.1:3b-instruct",
+    "label": "Granite 4.1 3B",
+    "description": "Enterprise-grade function calling and RAG. No thinking support.",
+    "cost": "low",
+    "concurrency": 3,
+    "strengths": ["function calling", "RAG", "JSON extraction"]
+  },
+  {
+    "id": "custom-model",
+    "label": "Custom",
+    "description": "Model with inline thinking override.",
+    "cost": "medium",
+    "strengths": ["custom"],
+    "thinking_template": "glm",
+    "thinking": {
+      "mode": "json_body",
+      "body_on": {"thinking": {"type": "enabled", "clear_thinking": true}},
+      "body_off": {"thinking": {"type": "disabled"}}
+    }
   }
 ]

@@ -83,7 +83,7 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 			{Name: "restart-stale", Description: "Restart all stale bots", Handler: func(_ string) { d.cmdRestartStale() }},
 			{Name: "remove", Description: "Kill and permanently delete a bot", Handler: func(args string) { d.cmdRemove(strings.TrimSpace(args)) }},
 			{Name: "send", Description: "Send a message to a bot <bot> <msg>", Handler: func(args string) { d.cmdSend(strings.TrimSpace(args)) }},
-			{Name: "spawn", Description: `Spawn a new bot <name> "<goal>" [model=<m>] [workspace=<w>] [node=<n>]`, Handler: func(args string) { d.cmdSpawn(strings.TrimSpace(args)) }},
+			{Name: "spawn", Description: `Spawn a new bot <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [thinking=<true|false>] [node=<n>]`, Handler: func(args string) { d.cmdSpawn(strings.TrimSpace(args)) }},
 			{Name: "nodes", Description: "List watchdog nodes in the cluster", Handler: func(_ string) { d.cmdNodes() }},
 			{Name: "export", Description: "Export a bot archive <bot> [path]", Handler: func(args string) { d.cmdExport(strings.TrimSpace(args)) }},
 			{Name: "workspace", Description: "Manage workspaces: list|add|remove", Handler: func(args string) { d.cmdWorkspace(strings.TrimSpace(args)) }},
@@ -991,17 +991,22 @@ func (d *Dashboard) cmdLogs(args string) {
 func (d *Dashboard) cmdSpawn(args string) {
 	name, goal, opts := parseSpawnArgs(args)
 	if name == "" || goal == "" {
-		d.showInfo(`usage: /spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [node=<n>]`)
+		d.showInfo(`usage: /spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [thinking=<true|false>] [node=<n>]`)
 		return
 	}
 	model := opts["model"]
 	if model == "" {
 		model = os.Getenv("BOT_MODEL")
 	}
+	thinking := true
+	if v, ok := opts["thinking"]; ok {
+		thinking = v != "false"
+	}
 	cfg := &bot.BotConfig{
-		Name:  name,
-		Goal:  goal,
-		Model: model,
+		Name:     name,
+		Goal:     goal,
+		Model:    model,
+		Thinking: thinking,
 	}
 	if ws := opts["workspace"]; ws != "" {
 		wsPath, wsSecret, wsScope, err := d.resolveWorkspace(ws)
