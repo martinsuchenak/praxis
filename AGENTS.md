@@ -95,13 +95,21 @@ The `schedule_action` tool stores reminders in `_reminders` in bot state, keyed 
 
 ## TUI: Start with Config Override
 
-`/start <bot> [key=value ...] [message]` — starts a bot with optional config changes and an initial message. Config keys: `model`, `thinking`, `goal`, `scope`. If bot is already running, config is updated but `/restart` is needed to apply.
+`/start <bot> [key=value ...] [message]` — starts a bot with optional config changes and an initial message. Config keys: `model`, `thinking`, `goal`, `scope`, `refresh` (`true` = overwrite `bot.py` from current template). If bot is already running, config is updated but `/restart` is needed to apply.
 
-`Manager.UpdateConfig()` in `manager.go` writes the fields to `config.json`. The runner reads config fresh on start via `SetVar("CONFIG", ...)`.
+## TUI: Restart with Config Override
+
+`/restart <bot> [key=value ...] [message]` — kill and restart with the same config override syntax as `/start`. Supports `refresh=true` to update template before restarting.
 
 ## TUI: Refresh Template
 
 `/refresh <bot>` — overwrites the bot's `bot.py` with the current `botcore.py` template via `Manager.RefreshTemplate()`. Requires `/restart` to run the updated code.
+
+`/refresh-all` — refreshes all bots' `bot.py` in one command.
+
+## TUI: Tab Completion
+
+Commands that take a bot name (`/start`, `/stop`, `/kill`, `/restart`, `/refresh`) support Tab completion — bot names are auto-populated from the current bot list and updated when the bot panel refreshes.
 
 ## Conventions
 

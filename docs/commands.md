@@ -190,15 +190,16 @@ Slash commands available in the TUI:
 | Command | Description |
 |---|---|
 | `/spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [thinking=<true|false>] [node=<n>]` | Create and start a new bot |
-| `/start [bot] [key=value ...] [message]` | Start a bot with optional config overrides and initial message |
+| `/start [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [refresh=true] [message]` | Start a bot with optional config overrides and initial message |
 | `/start-all` | Start all stopped bots |
 | `/stop [bot]` | Graceful stop — signals on next tick (defaults to selected) |
 | `/stop-all` | Graceful stop all running bots |
 | `/kill [bot]` | Immediate SIGTERM (defaults to selected) |
 | `/kill-all` | Kill all running bots |
-| `/restart [bot]` | Kill and restart (defaults to selected) |
+| `/restart [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [refresh=true] [message]` | Kill and restart with optional config and message |
 | `/restart-stale` | Restart all bots flagged as stale |
 | `/refresh [bot]` | Update bot.py from current template (restart to apply) |
+| `/refresh-all` | Update all bots bot.py from current template |
 | `/remove <bot>` | Kill and permanently delete a bot (removes locks + directory) |
 
 ### Cluster
@@ -224,20 +225,31 @@ Plain text (no `/` prefix) sends to the currently selected bot's inbox.
 /start <bot> [key=value ...] [message]
 ```
 
-Config keys: `model`, `thinking` (`true`/`false`), `goal`, `scope`.
+Config keys: `model`, `thinking` (`true`/`false`), `goal`, `scope`, `refresh` (`true` — overwrites `bot.py` from current template).
 
 Examples:
 
 ```
 /start mybot model=gpt-4o thinking=true analyze this data
 /start mybot model=phi-4-mini                           # just change model and start
+/start mybot refresh=true                               # refresh template and start
 /start mybot do the thing                               # start with message, no config change
 /start mybot                                            # plain start (no message)
 ```
 
 If the bot is already running, config is updated but a `/restart` is needed to apply it.
 
-### `/refresh` — Update bot.py
+### `/restart` with Config and Message
+
+`/restart` accepts the same `key=value` overrides and optional message:
+
+```
+/restart mybot model=gpt-4o                             # change model and restart
+/restart mybot refresh=true model=gpt-4o                # refresh template + change model + restart
+/restart mybot goal="new goal" now start doing this     # change goal + restart + send message
+```
+
+### `/refresh` and `/refresh-all` — Update bot.py
 
 Bots get a copy of `botcore.py` at spawn time. After editing the template, use `/refresh` to update an existing bot:
 
