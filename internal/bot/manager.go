@@ -137,6 +137,29 @@ func (m *Manager) SetStatus(id, status string) error {
 	return SaveState(botDir, state)
 }
 
+// UpdateConfig applies field updates to a bot's config.json.
+// Only non-empty values are applied.
+func (m *Manager) UpdateConfig(id string, updates map[string]string) error {
+	botDir := m.BotDir(id)
+	cfg, err := LoadConfig(botDir)
+	if err != nil {
+		return err
+	}
+	if v, ok := updates["model"]; ok {
+		cfg.Model = v
+	}
+	if v, ok := updates["thinking"]; ok {
+		cfg.Thinking = v == "true"
+	}
+	if v, ok := updates["goal"]; ok {
+		cfg.Goal = v
+	}
+	if v, ok := updates["scope"]; ok {
+		cfg.Scope = v
+	}
+	return SaveConfig(botDir, cfg)
+}
+
 // Delete kills any running process and removes the bot directory.
 func (m *Manager) Delete(id string) error {
 	if err := ValidateName(id); err != nil {
@@ -189,6 +212,14 @@ func (m *Manager) copyTemplate(botDir string) error {
 		return os.WriteFile(dst, m.TemplateBytes, 0o644)
 	}
 	return copyFile(m.TemplatePath, dst)
+}
+
+// RefreshTemplate overwrites bot.py with the current template.
+func (m *Manager) RefreshTemplate(id string) error {
+	if err := ValidateName(id); err != nil {
+		return err
+	}
+	return m.copyTemplate(m.BotDir(id))
 }
 
 func copyFile(src, dst string) error {

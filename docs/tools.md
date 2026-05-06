@@ -79,6 +79,14 @@ The system prompt shows current warm memory size. Use `recall_warm_memory` when 
 | Tool | Parameters | Description |
 |---|---|---|
 | `http_request` | `url`, `method?`, `body?`, `content_type?`, `headers?`, `timeout?` | HTTP request (GET/POST/PUT/DELETE/PATCH). Returns `http_status` (real HTTP code). Respects `BOT_HTTP_ALLOWLIST`. |
+| `web_search` | `query`, `max_results?` | Search the web via DuckDuckGo. Returns results with title, URL, and snippet. |
+| `web_fetch` | `url`, `max_chars?` | Fetch a web page and extract text content. Strips HTML, scripts, and styles. Respects `BOT_HTTP_ALLOWLIST`. |
+
+## Scheduling
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `schedule_action` | `message`, `in_ticks?` | Schedule a reminder that fires at a future tick. Message appears in the tick instructions. Default: next tick. |
 
 ## Hardware
 

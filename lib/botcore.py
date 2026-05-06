@@ -129,6 +129,23 @@ def _plan_state():
     return "done"
 
 
+_STUCK_TICK_THRESHOLD = int(os.environ.get("BOT_STUCK_TICKS", "5"))
+
+def _check_stuck(state):
+    plan_path = os.path.join(BOT_DIR, "entities", "plan.md")
+    if not os.path.exists(plan_path):
+        return False
+    content = os.read_file(plan_path)
+    plan_hash = str(len(content)) + ":" + str(content.count("[x]")) + ":" + str(content.count("[ ]"))
+    last_hash = state.get("_plan_hash", "")
+    last_tick = state.get("_plan_hash_tick", 0)
+    if plan_hash != last_hash:
+        state["_plan_hash"] = plan_hash
+        state["_plan_hash_tick"] = _tick_count
+        return False
+    return (_tick_count - last_tick) >= _STUCK_TICK_THRESHOLD
+
+
 def _log(level, msg):
     line = time.strftime("%Y-%m-%d %H:%M:%S") + " [" + level + "] " + msg
     _log_buffer.append(line)
@@ -1575,15 +1592,158 @@ def _memory_forget(args):
         return "Error: " + str(e)
 
 
+
+
+def _schedule_action(args):
+    message = args["message"]
+    in_ticks = int(args.get("in_ticks", 1))
+    state = _load_state()
+    reminders = state.get("_reminders", [])
+    reminders.append({"tick": _tick_count + in_ticks, "message": message})
+    state["_reminders"] = reminders
+    _save_state(state)
+    return "Scheduled for tick " + str(_tick_count + in_ticks) + ": " + message
+
+
+_WEB_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+
+def _ddg_extract_url(redirect_url):
+    if "//duckduckgo.com/l/?uddg=" in redirect_url:
+        encoded = redirect_url.split("uddg=", 1)[1].split("&", 1)[0]
+        from urllib.parse import unquote
+        return unquote(encoded)
+    return redirect_url
+
+
+def _strip_html(text):
+    out = []
+    i = 0
+    while i < len(text):
+        if text[i] == "<":
+            j = text.find(">", i)
+            if j >= 0:
+                i = j + 1
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out).strip()
+
+
+def _web_search(args):
+    query = args["query"]
+    max_results = int(args.get("max_results", 5))
+    try:
+        resp = requests.get(
+            "https://lite.duckduckgo.com/lite/",
+            params={"q": query, "kl": "us-en"},
+            timeout=15,
+            headers=_WEB_HEADERS,
+        )
+        if resp.status_code != 200:
+            return json.dumps({"error": "HTTP " + str(resp.status_code)})
+        results = []
+        title = ""
+        href = ""
+        snippet = ""
+        for row in resp.text.split("<tr>"):
+            if "class='result-link'" in row:
+                if title and len(results) < max_results:
+                    results.append({"title": _strip_html(title), "url": href, "snippet": _strip_html(snippet)})
+                title = ""
+                href = ""
+                snippet = ""
+                s = row.find('href="')
+                if s >= 0:
+                    s += 6
+                    e = row.find('"', s)
+                    if e > s:
+                        href = _ddg_extract_url(row[s:e])
+                s = row.find("class='result-link'")
+                if s >= 0:
+                    s = row.find(">", s)
+                    if s >= 0:
+                        s += 1
+                        e = row.find("</a>", s)
+                        if e > s:
+                            title = row[s:e].strip()
+            if "class='result-snippet'" in row:
+                s = row.find("class='result-snippet'>")
+                if s >= 0:
+                    s += len("class='result-snippet'>")
+                    e = row.find("</td>", s)
+                    if e > s:
+                        snippet = row[s:e].strip()
+            if "class='link-text'" in row:
+                s = row.find("class='link-text'>")
+                if s >= 0:
+                    s += len("class='link-text'>")
+                    e = row.find("</span>", s)
+                    if e > s and not href:
+                        href = row[s:e].strip()
+        if title and len(results) < max_results:
+            results.append({"title": _strip_html(title), "url": href, "snippet": _strip_html(snippet)})
+        return json.dumps({"results": results})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def _web_fetch(args):
+    url = args["url"]
+    if not _http_allowed(url):
+        return json.dumps({"error": url.split("//", 1)[-1].split("/")[0] + " is not in the HTTP allowlist."})
+    max_chars = int(args.get("max_chars", 20000))
+    try:
+        resp = requests.get(url, timeout=15, headers=_WEB_HEADERS, allow_redirects=True)
+        if resp.status_code >= 400:
+            return json.dumps({"error": "HTTP " + str(resp.status_code), "url": url})
+        text = resp.text
+        for tag in ("script", "style", "nav", "footer", "header"):
+            while True:
+                s = text.find("<" + tag)
+                if s < 0:
+                    break
+                e = text.find("</" + tag + ">", s)
+                if e < 0:
+                    text = text[:s]
+                    break
+                text = text[:s] + text[e + len(tag) + 3:]
+        import html as _html
+        stripped = ""
+        in_tag = False
+        for ch in text:
+            if ch == "<":
+                in_tag = True
+                continue
+            if ch == ">":
+                in_tag = False
+                stripped += " "
+                continue
+            if not in_tag:
+                stripped += ch
+        plain = _html.unescape(stripped)
+        lines = [l.strip() for l in plain.split("\n") if l.strip()]
+        content = "\n".join(lines)
+        if len(content) > max_chars:
+            content = content[:max_chars] + "\n... (truncated)"
+        return json.dumps({"url": url, "content": content, "length": len(content)})
+    except Exception as e:
+        return json.dumps({"error": str(e), "url": url})
+
+
 tools.add("read_file", "Read a file in your directory", {"path": "string"}, _wrap_tool("read_file", _read_file))
-tools.add("read_file_range", "Read a line range from a file (1-indexed)", {"path": "string", "start": "number", "end": "number?"}, _wrap_tool("read_file_range", _read_file_range))
+tools.add("read_file_range", "Read a line range from a file (1-indexed)", {"path": "string", "start": "integer", "end": "integer?"}, _wrap_tool("read_file_range", _read_file_range))
 tools.add("write_file", "Write a file to your directory. Include a brief description of what the file contains.", {"path": "string", "content": "string", "description": "string?"}, _wrap_tool("write_file", _write_file))
 tools.add("append_file", "Append content to an existing file (creates it if absent)", {"path": "string", "content": "string"}, _wrap_tool("append_file", _append_file))
 tools.add("delete_file", "Delete a file from your directory", {"path": "string"}, _wrap_tool("delete_file", _delete_file))
 tools.add("replace_in_file", "Replace text in a file (more efficient than read+write for small edits)", {"path": "string", "old": "string", "new": "string"}, _wrap_tool("replace_in_file", _replace_in_file))
 tools.add("list_dir", "List files in a directory", {"path": "string?"}, _wrap_tool("list_dir", _list_dir))
 tools.add("search", "Search file contents with a regex pattern", {"pattern": "string", "path": "string?", "glob": "string?", "ignore_case": "boolean?"}, _wrap_tool("search", _search))
-tools.add("shell", "Run a shell command via the command proxy (sandboxed, no network tools)", {"command": "string", "cwd": "string?", "timeout": "number?"}, _wrap_tool("shell", _shell))
+tools.add("shell", "Run a shell command via the command proxy (sandboxed, no network tools)", {"command": "string", "cwd": "string?", "timeout": "integer?"}, _wrap_tool("shell", _shell))
 tools.add("terminate", "Request the watchdog to terminate you. Use when your goal is complete or you are no longer needed.", {}, _wrap_tool("terminate", _terminate))
 tools.add("run_script", "Run a scriptling script", {"path": "string", "args": "string?"}, _wrap_tool("run_script", _run_script))
 tools.add("send_message", "Send a direct message to a bot by ID", {"recipient": "string", "content": "string"}, _wrap_tool("send_message", _send_message))
@@ -1602,12 +1762,15 @@ tools.add("archive_to_warm_memory", "Move content from your brain to warm memory
 tools.add("update_warm_memory", "Overwrite or append to warm memory directly.", {"content": "string", "action": "string?"}, _wrap_tool("update_warm_memory", _update_warm_memory))
 tools.add("query_model", "Send a one-shot prompt to a specific model (for specialised subtasks)", {"model": "string", "prompt": "string", "system": "string?", "thinking": "boolean?"}, _wrap_tool("query_model", _query_model))
 tools.add("list_models", "List available models with descriptions, costs, and strengths", {}, _wrap_tool("list_models", _list_models))
-tools.add("local_generate", "Run a local GGUF model for fast, private inference. These are small instruct models — use only for simple tasks like classification, formatting, short answers, text extraction, or quick triage. NOT for complex reasoning, coding, or long-form generation.", {"model": "string", "prompt": "string", "max_tokens": "number?", "strategy": "string?", "temperature": "number?", "system_prompt": "string?", "stats": "boolean?"}, _wrap_tool("local_generate", _local_generate))
+tools.add("local_generate", "Run a local GGUF model for fast, private inference. These are small instruct models — use only for simple tasks like classification, formatting, short answers, text extraction, or quick triage. NOT for complex reasoning, coding, or long-form generation.", {"model": "string", "prompt": "string", "max_tokens": "integer?", "strategy": "string?", "temperature": "number?", "system_prompt": "string?", "stats": "boolean?"}, _wrap_tool("local_generate", _local_generate))
 tools.add("list_local_models", "List available local GGUF models for private inference", {}, _wrap_tool("list_local_models", _list_local_models))
-tools.add("http_request", "HTTP request (GET/POST/PUT/DELETE/PATCH) with optional body and headers", {"url": "string", "method": "string?", "body": "string?", "content_type": "string?", "headers": "string?", "timeout": "number?"}, _wrap_tool("http_request", _http_request))
-tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "number?"}, _wrap_tool("ask_consensus", _ask_consensus))
+tools.add("http_request", "HTTP request (GET/POST/PUT/DELETE/PATCH) with optional body and headers", {"url": "string", "method": "string?", "body": "string?", "content_type": "string?", "headers": "string?", "timeout": "integer?"}, _wrap_tool("http_request", _http_request))
+tools.add("web_search", "Search the web using DuckDuckGo. Returns a list of results with title, URL, and snippet.", {"query": "string", "max_results": "integer?"}, _wrap_tool("web_search", _web_search))
+tools.add("web_fetch", "Fetch a web page and extract its text content. Strips HTML tags, scripts, and styles.", {"url": "string", "max_chars": "integer?"}, _wrap_tool("web_fetch", _web_fetch))
+tools.add("schedule_action", "Schedule a reminder for a future tick. The message will appear in your tick instructions when it fires.", {"message": "string", "in_ticks": "integer?"}, _wrap_tool("schedule_action", _schedule_action))
+tools.add("ask_consensus", "Ask other bots for their opinion and return the majority (use sparingly, only when you truly need a second opinion)", {"question": "string", "n": "integer?"}, _wrap_tool("ask_consensus", _ask_consensus))
 tools.add("memory_remember", "Store a fact, lesson, or observation in persistent memory. Include a reason explaining why this is worth remembering.", {"content": "string", "type": "string?", "importance": "number?", "reason": "string?"}, _wrap_tool("memory_remember", _memory_remember))
-tools.add("memory_recall", "Search memories by keyword and similarity, or call with no args to load your preferences and top memories", {"query": "string?", "limit": "number?", "type": "string?"}, _wrap_tool("memory_recall", _memory_recall))
+tools.add("memory_recall", "Search memories by keyword and similarity, or call with no args to load your preferences and top memories", {"query": "string?", "limit": "integer?", "type": "string?"}, _wrap_tool("memory_recall", _memory_recall))
 tools.add("memory_forget", "Remove a memory by ID", {"id": "string"}, _wrap_tool("memory_forget", _memory_forget))
 
 
@@ -1833,8 +1996,21 @@ while True:
         if last_activity:
             tick_msg += "\nLast tick you: " + last_activity + "\n"
 
+        reminders = state.get("_reminders", [])
+        due = [r for r in reminders if r.get("tick", 0) <= _tick_count]
+        if due:
+            tick_msg += "\n## Reminders\n"
+            for r in due:
+                tick_msg += "- " + r.get("message", "") + "\n"
+            remaining = [r for r in reminders if r.get("tick", 0) > _tick_count]
+            state["_reminders"] = remaining
+            _save_state(state)
+
         tick_msg += "\n## Instructions\n"
         plan = _plan_state()
+        stuck = _check_stuck(state)
+        if stuck:
+            tick_msg += "WARNING: Your plan has not changed in " + str(_STUCK_TICK_THRESHOLD) + " ticks. You appear stuck. Try a different approach: break the task into smaller steps, use a different tool, ask a peer for help, or revise the plan entirely.\n\n"
         if unread_msgs:
             tick_msg += "You have " + str(len(unread_msgs)) + " message" + ("" if len(unread_msgs) == 1 else "s") + ". Handle them FIRST — they may require updating your plan or immediate action.\n\n"
             for m in unread_msgs:

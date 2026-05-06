@@ -59,7 +59,7 @@ The scriptling gossip library hardcodes `codec.NewVmihailencoMsgpackCodec()` at 
 
 `lib/botcore.py` uses `{{CONFIG}}`, `{{BOT_ID}}`, etc. as template placeholders. The `bot.Manager.TemplateBytes` field holds the raw template. At spawn, `Manager.Create()` replaces placeholders and writes the result to the bot's directory.
 
-When editing `botcore.py`: changes affect all newly spawned bots. Existing bots keep their copy. The file is embedded at build time via `embed.go`.
+When editing `botcore.py`: changes affect all newly spawned bots. Existing bots keep their copy. Use `/refresh <bot>` to update an existing bot's `bot.py` from the current template, then `/restart` to apply. The file is embedded at build time via `embed.go`.
 
 ## Thinking Mode
 
@@ -75,6 +75,33 @@ Built-in templates are defined in `_THINKING_TEMPLATES` dict in `botcore.py`. Re
 - `"mode": "json_body"` — passes extra JSON body params (e.g., `{"thinking": {"type": "disabled"}}`) to the API call via `extra_body`
 
 The `_apply_thinking(model_id, prompt, enabled)` helper in `botcore.py` handles all cases. It is used in `_query_model`, the main tick loop, and `_consensus_llm_call`. The per-bot `BotConfig.Thinking` flag (set via `--no-thinking` on spawn) determines whether thinking is on or off; the model's config determines *how* it's applied.
+
+## Plan-Driven Tick Loop
+
+Bots work in a plan-driven loop: (1) handle messages first, (2) execute active plan, (3) assess and create new plan or terminate. Plans live in `entities/plan.md` as Markdown checklists (`[ ]` / `[x]`). The `_plan_state()` helper detects plan state (`"none"`, `"active"`, `"done"`).
+
+### Stuck Detection
+
+If the plan hasn't changed in `BOT_STUCK_TICKS` ticks (default 5), a warning is injected into the tick instructions prompting the bot to try a different approach. The `_check_stuck()` helper tracks a hash of the plan content in bot state.
+
+### Scheduled Actions
+
+The `schedule_action` tool stores reminders in `_reminders` in bot state, keyed by target tick number. Due reminders appear in a `## Reminders` section in the tick message before instructions. Expired reminders are cleaned up automatically.
+
+## Web Tools
+
+- `web_search` — queries DuckDuckGo Lite, parses `result-link`, `result-snippet`, `link-text` classes. Redirect URLs are decoded via `_ddg_extract_url`. HTML tags stripped from results via `_strip_html`.
+- `web_fetch` — fetches a URL, strips HTML tags/scripts/styles, returns plain text. Accepts any response < 400 (follows redirects). Respects `BOT_HTTP_ALLOWLIST`.
+
+## TUI: Start with Config Override
+
+`/start <bot> [key=value ...] [message]` — starts a bot with optional config changes and an initial message. Config keys: `model`, `thinking`, `goal`, `scope`. If bot is already running, config is updated but `/restart` is needed to apply.
+
+`Manager.UpdateConfig()` in `manager.go` writes the fields to `config.json`. The runner reads config fresh on start via `SetVar("CONFIG", ...)`.
+
+## TUI: Refresh Template
+
+`/refresh <bot>` — overwrites the bot's `bot.py` with the current `botcore.py` template via `Manager.RefreshTemplate()`. Requires `/restart` to run the updated code.
 
 ## Conventions
 

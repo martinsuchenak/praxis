@@ -73,7 +73,7 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 			{Name: "info", Description: "Show full bot config/status [bot]", Handler: func(args string) { d.cmdInfo(strings.TrimSpace(args)) }},
 			{Name: "logs", Description: "Show recent log lines [bot] [lines]", Handler: func(args string) { d.cmdLogs(strings.TrimSpace(args)) }},
 			{Name: "top", Description: "Scroll log panel to top", Handler: func(_ string) { d.ui.Panel("main").ScrollToTop() }},
-			{Name: "start", Description: "Start a bot [bot]", Handler: func(args string) { d.cmdStart(strings.TrimSpace(args)) }},
+			{Name: "start", Description: "Start a bot [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [msg]", Handler: func(args string) { d.cmdStartWithMessage(strings.TrimSpace(args)) }},
 			{Name: "start-all", Description: "Start all stopped bots", Handler: func(_ string) { d.cmdStartAll() }},
 			{Name: "stop", Description: "Stop a bot gracefully [bot]", Handler: func(args string) { d.cmdStop(strings.TrimSpace(args)) }},
 			{Name: "stop-all", Description: "Stop all running bots", Handler: func(_ string) { d.cmdStopAll() }},
@@ -81,6 +81,7 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 			{Name: "kill-all", Description: "Kill all running bots", Handler: func(_ string) { d.cmdKillAll() }},
 			{Name: "restart", Description: "Kill and restart a bot [bot]", Handler: func(args string) { d.cmdRestart(strings.TrimSpace(args)) }},
 			{Name: "restart-stale", Description: "Restart all stale bots", Handler: func(_ string) { d.cmdRestartStale() }},
+			{Name: "refresh", Description: "Update bot.py from current template [bot]", Handler: func(args string) { d.cmdRefresh(strings.TrimSpace(args)) }},
 			{Name: "remove", Description: "Kill and permanently delete a bot", Handler: func(args string) { d.cmdRemove(strings.TrimSpace(args)) }},
 			{Name: "send", Description: "Send a message to a bot <bot> <msg>", Handler: func(args string) { d.cmdSend(strings.TrimSpace(args)) }},
 			{Name: "spawn", Description: `Spawn a new bot <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [thinking=<true|false>] [node=<n>]`, Handler: func(args string) { d.cmdSpawn(strings.TrimSpace(args)) }},
@@ -628,6 +629,153 @@ func (d *Dashboard) cmdList() {
 	main.WriteString(sb.String())
 }
 
+func (d *Dashboard) cmdStartWithMessage(args string) {
+	remaining, name := args, ""
+	{
+		d.mu.Lock()
+		selected := d.selectedBot
+		d.mu.Unlock()
+		remaining, name = extractBotName(args, selected)
+	}
+	if name == "" {
+		d.showInfo("usage: /start <bot> [key=value ...] [message]")
+		return
+	}
+	b, err := d.mgr.Get(name)
+	if err != nil {
+		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
+		return
+	}
+
+	var configUpdates map[string]string
+	remaining, configUpdates = parseKeyValueArgs(remaining)
+
+	var info []string
+	if len(configUpdates) > 0 {
+		if err := d.mgr.UpdateConfig(name, configUpdates); err != nil {
+			d.showInfo(fmt.Sprintf("config update: %v", err))
+			return
+		}
+		keys := make([]string, 0, len(configUpdates))
+		for k := range configUpdates {
+			keys = append(keys, k+"="+configUpdates[k])
+		}
+		info = append(info, "config: "+strings.Join(keys, ", "))
+	}
+
+	switch b.State.Status {
+	case bot.StatusRunning, bot.StatusStarting:
+		if len(configUpdates) > 0 {
+			info = append(info, "/restart to apply config")
+		} else {
+			info = append(info, fmt.Sprintf("%s is already %s", name, b.State.Status))
+		}
+	default:
+		if err := d.pool.Start(name); err != nil {
+			d.showInfo(fmt.Sprintf("start %s: %v", name, err))
+			return
+		}
+		info = append(info, "started")
+	}
+
+	if remaining != "" {
+		info = append(info, "msg: "+remaining)
+	}
+	d.showInfo(name + " · " + strings.Join(info, " | "))
+
+	if remaining != "" {
+		d.ui.AddMessage(gotui.RoleUser, remaining)
+		if err := d.node.SendMessage(name, remaining); err != nil {
+			main := d.ui.Panel("main")
+			main.WriteString(main.Styled(d.ui.Theme().Error, "[send failed: "+err.Error()+"]") + "\n")
+			return
+		}
+		d.ui.AddMessageAs(gotui.RoleAssistant, name, "message sent")
+	}
+
+	if !d.vizActive {
+		d.selectBot(d.ui.Context(), name)
+	}
+}
+
+func parseKeyValueArgs(args string) (remaining string, kv map[string]string) {
+	kv = map[string]string{}
+	var rest []string
+	i := 0
+	for i < len(args) {
+		for i < len(args) && args[i] == ' ' {
+			i++
+		}
+		if i >= len(args) {
+			break
+		}
+		eq := strings.IndexByte(args[i:], '=')
+		if eq < 0 {
+			j := strings.IndexByte(args[i:], ' ')
+			if j < 0 {
+				rest = append(rest, args[i:])
+				break
+			}
+			rest = append(rest, args[i:i+j])
+			i += j + 1
+			continue
+		}
+		key := args[i : i+eq]
+		if strings.Contains(key, " ") || key == "" {
+			rest = append(rest, args[i:])
+			break
+		}
+		i += eq + 1
+		if i >= len(args) {
+			kv[key] = ""
+			break
+		}
+		var val string
+		if args[i] == '"' {
+			end := strings.IndexByte(args[i+1:], '"')
+			if end >= 0 {
+				val = args[i+1 : i+1+end]
+				i += end + 2
+			} else {
+				j := strings.IndexByte(args[i:], ' ')
+				if j < 0 {
+					val = args[i+1:]
+					i = len(args)
+				} else {
+					val = args[i+1 : i+j]
+					i += j + 1
+				}
+			}
+		} else {
+			j := strings.IndexByte(args[i:], ' ')
+			if j < 0 {
+				val = args[i:]
+				i = len(args)
+			} else {
+				val = args[i : i+j]
+				i += j + 1
+			}
+		}
+		kv[key] = val
+	}
+	return strings.Join(rest, " "), kv
+}
+
+func extractBotName(args string, selected string) (remaining string, name string) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return "", selected
+	}
+	first := strings.SplitN(args, " ", 2)[0]
+	if err := bot.ValidateName(first); err == nil {
+		if len(args) > len(first) {
+			return args[len(first)+1:], first
+		}
+		return "", first
+	}
+	return args, selected
+}
+
 func (d *Dashboard) cmdStart(name string) {
 	if name == "" {
 		d.mu.Lock()
@@ -712,6 +860,31 @@ func (d *Dashboard) cmdStopAll() {
 		go func(n string) { _ = d.pool.Stop(n) }(name)
 	}
 	d.showInfo(fmt.Sprintf("stopping %d bots", len(names)))
+}
+
+func (d *Dashboard) cmdRefresh(name string) {
+	if name == "" {
+		d.mu.Lock()
+		name = d.selectedBot
+		d.mu.Unlock()
+	}
+	if name == "" {
+		d.showInfo("usage: /refresh <bot>")
+		return
+	}
+	if _, err := d.mgr.Get(name); err != nil {
+		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
+		return
+	}
+	if err := d.mgr.RefreshTemplate(name); err != nil {
+		d.showInfo(fmt.Sprintf("refresh %s: %v", name, err))
+		return
+	}
+	hint := ""
+	if b, _ := d.mgr.Get(name); b != nil && (b.State.Status == bot.StatusRunning || b.State.Status == bot.StatusStarting) {
+		hint = " — /restart to apply"
+	}
+	d.showInfo("refreshed bot.py for " + name + hint)
 }
 
 func (d *Dashboard) cmdKill(name string) {

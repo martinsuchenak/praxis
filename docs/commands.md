@@ -190,7 +190,7 @@ Slash commands available in the TUI:
 | Command | Description |
 |---|---|
 | `/spawn <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [thinking=<true|false>] [node=<n>]` | Create and start a new bot |
-| `/start [bot]` | Start a bot (defaults to selected) |
+| `/start [bot] [key=value ...] [message]` | Start a bot with optional config overrides and initial message |
 | `/start-all` | Start all stopped bots |
 | `/stop [bot]` | Graceful stop — signals on next tick (defaults to selected) |
 | `/stop-all` | Graceful stop all running bots |
@@ -198,6 +198,7 @@ Slash commands available in the TUI:
 | `/kill-all` | Kill all running bots |
 | `/restart [bot]` | Kill and restart (defaults to selected) |
 | `/restart-stale` | Restart all bots flagged as stale |
+| `/refresh [bot]` | Update bot.py from current template (restart to apply) |
 | `/remove <bot>` | Kill and permanently delete a bot (removes locks + directory) |
 
 ### Cluster
@@ -214,6 +215,36 @@ Slash commands available in the TUI:
 | `/select <bot>` | Switch log view to a specific bot |
 
 Plain text (no `/` prefix) sends to the currently selected bot's inbox.
+
+### `/start` with Config and Message
+
+`/start` accepts optional `key=value` config overrides and an initial message:
+
+```
+/start <bot> [key=value ...] [message]
+```
+
+Config keys: `model`, `thinking` (`true`/`false`), `goal`, `scope`.
+
+Examples:
+
+```
+/start mybot model=gpt-4o thinking=true analyze this data
+/start mybot model=phi-4-mini                           # just change model and start
+/start mybot do the thing                               # start with message, no config change
+/start mybot                                            # plain start (no message)
+```
+
+If the bot is already running, config is updated but a `/restart` is needed to apply it.
+
+### `/refresh` — Update bot.py
+
+Bots get a copy of `botcore.py` at spawn time. After editing the template, use `/refresh` to update an existing bot:
+
+```
+/refresh mybot       # overwrite bot.py with current template
+/restart mybot       # restart to run the updated code
+```
 
 ### Inspection
 

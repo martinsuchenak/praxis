@@ -33,6 +33,7 @@ Copy `.env.example` to `.env` and fill in at minimum `BOT_API_KEY`, `BOT_BASE_UR
 | `BOT_TICK_MAX_ITERATIONS` | `5` | Max tool-call rounds per tick |
 | `BOT_MAX_BACKOFF` | `600` | Max backoff seconds after repeated tick errors |
 | `BOT_STALE_THRESHOLD` | `120` | Seconds before a running bot is flagged STALE |
+| `BOT_STUCK_TICKS` | `5` | Ticks without plan changes before stuck detection triggers |
 | `BOT_MAX_CONCURRENT` | `1` | Max concurrent LLM calls (global fallback; override per-model in `models.json`) |
 
 ## Logging
