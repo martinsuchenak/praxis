@@ -117,6 +117,18 @@ GOSSIP_MSG = gossip.MSG_USER
 _log_buffer = []
 
 
+def _plan_state():
+    plan_path = os.path.join(BOT_DIR, "entities", "plan.md")
+    if not os.path.exists(plan_path):
+        return "none"
+    content = os.read_file(plan_path)
+    for line in content.split("\n"):
+        s = line.strip()
+        if "[ ]" in s and (s.startswith("-") or s[0].isdigit()):
+            return "active"
+    return "done"
+
+
 def _log(level, msg):
     line = time.strftime("%Y-%m-%d %H:%M:%S") + " [" + level + "] " + msg
     _log_buffer.append(line)
@@ -581,7 +593,10 @@ _log("INFO", "started  addr=" + _gossip_addr + "  model=" + model_name + "  scop
 def _gossip_send(node_id, payload):
     if GOSSIP_SECRET:
         payload["_secret"] = GOSSIP_SECRET
-    cluster.send_to(node_id, GOSSIP_MSG, payload)
+    try:
+        cluster.send_request(node_id, GOSSIP_MSG, payload)
+    except Exception:
+        cluster.send_to(node_id, GOSSIP_MSG, payload)
 
 
 def _on_gossip_msg(msg):
@@ -1603,9 +1618,18 @@ def _build_system_prompt():
     prompt = "You are " + BOT_ID + ", an autonomous agent. Your goal drives everything you do.\n\n"
     prompt += "## Goal\n" + goal + "\n\n"
     prompt += "## How you work\n"
-    prompt += "Each tick, take the next meaningful action toward your goal.\n"
-    prompt += "Store knowledge, decisions, and plans as files under entities/ - write them, refine them, use them.\n"
-    prompt += "When you need to automate or compute something, write a scriptling script under entities/ and run it.\n"
+    prompt += "You work in a plan-driven loop each tick:\n"
+    prompt += "1. **Messages first** — handle incoming messages immediately. They can modify your plan or require urgent action.\n"
+    prompt += "2. **Execute plan** — if `entities/plan.md` has unfinished tasks, complete the next one.\n"
+    prompt += "3. **Assess** — no messages and no pending tasks? Evaluate progress toward your goal. If there's a logical next step, create a new plan. If your goal is fully achieved, terminate.\n\n"
+    prompt += "### Plans\n"
+    prompt += "Plans live in `entities/plan.md` as a numbered Markdown checklist:\n"
+    prompt += "```\n# Plan: <title>\n1. [ ] First task\n2. [ ] Second task\n3. [x] Completed task\n```\n"
+    prompt += "- Create a plan when starting a new goal or phase.\n"
+    prompt += "- Mark tasks done with `[x]` as you complete them.\n"
+    prompt += "- Replace or extend the plan at any time — incoming messages may require updating it.\n"
+    prompt += "- When all tasks are done, assess whether to create a new plan or terminate.\n\n"
+    prompt += "Store knowledge, decisions, and reference material as files under entities/. Write scripts under entities/ and run them when you need to automate or compute.\n"
     prompt += "When you need more capacity, spawn child bots with specific sub-goals. Pick a model that suits the child's task — a cheaper model for routine work, a stronger one for complex reasoning.\n"
     prompt += "You decide what to create, write, or delegate. No one tells you what you need.\n\n"
     prompt += "## Persistence\n"
@@ -1695,11 +1719,12 @@ def _build_system_prompt():
         prompt += "\n"
 
     prompt += "## Handling messages\n"
-    prompt += "Unread messages are included directly in your tick message — act on them immediately:\n"
-    prompt += "- A task request (\"write X\", \"build Y\", \"analyse Z\") — do it, then reply with the result.\n"
+    prompt += "Unread messages are included directly in your tick message — handle them before continuing your plan:\n"
+    prompt += "- A task request (\"write X\", \"build Y\", \"analyse Z\") — do it or add it to your plan, then reply with the result.\n"
     prompt += "- A question — answer it directly.\n"
     prompt += "- Coordination from a peer — incorporate it and continue.\n"
     prompt += "- A task_complete report — incorporate the result and continue.\n"
+    prompt += "- A directive to do something extra — add it to your plan before finishing current tasks.\n"
     prompt += "Never wait for further clarification before starting. If the request is clear enough to attempt, attempt it.\n"
     prompt += "Do NOT log that you are 'awaiting' or 'unsure whether to proceed' — just proceed.\n\n"
     prompt += "## Hardware Devices\n"
@@ -1729,7 +1754,6 @@ _thinking_cfg = _get_thinking_config(model_name)
 _agent_extra_body = None
 if _thinking_cfg and _thinking_cfg.get("mode") == "json_body":
     _agent_extra_body = _thinking_cfg.get("body_on", {}) if thinking_enabled else _thinking_cfg.get("body_off", {})
-_log("DEBUG", "thinking config: model=" + model_name + " thinking=" + str(thinking_enabled) + " cfg=" + str(_thinking_cfg) + " extra_body=" + str(_agent_extra_body))
 
 bot_agent = agent.Agent(
     client,
@@ -1810,8 +1834,9 @@ while True:
             tick_msg += "\nLast tick you: " + last_activity + "\n"
 
         tick_msg += "\n## Instructions\n"
+        plan = _plan_state()
         if unread_msgs:
-            tick_msg += "You have " + str(len(unread_msgs)) + " message" + ("" if len(unread_msgs) == 1 else "s") + ". Act on them immediately.\n\n"
+            tick_msg += "You have " + str(len(unread_msgs)) + " message" + ("" if len(unread_msgs) == 1 else "s") + ". Handle them FIRST — they may require updating your plan or immediate action.\n\n"
             for m in unread_msgs:
                 sender = m.get("from", "?")
                 content = m.get("content", "")
@@ -1822,9 +1847,16 @@ while True:
                     tick_msg += "From " + sender + " [delivered]: your message was received. They will respond on their next tick.\n"
                 else:
                     tick_msg += "From " + sender + ": " + content + "\n"
-            tick_msg += "\nWhat is your next action?"
+            if plan == "active":
+                tick_msg += "\nAfter handling messages, continue your plan in entities/plan.md."
+            elif plan == "none":
+                tick_msg += "\nAfter handling messages, create a plan in entities/plan.md if these require multi-step work."
+        elif plan == "active":
+            tick_msg += "Continue your plan in entities/plan.md. Complete the next unfinished task and mark it done. If blocked, note why and move to the next."
+        elif plan == "done":
+            tick_msg += "All plan tasks are complete. Assess your goal progress — if there's a logical next step, create a new plan in entities/plan.md. If your goal is fully achieved, terminate."
         else:
-            tick_msg += "What is your next action toward your goal?"
+            tick_msg += "No plan exists. Analyze your goal and create a task plan in entities/plan.md, then start on the first task."
 
         _lock_model()
         _log("INFO", "calling LLM " + model_name + "...")
