@@ -66,7 +66,7 @@ func TestMaskColorActiveWhite(t *testing.T) {
 func TestOnLine(t *testing.T) {
 	cases := []struct {
 		px, py, x1, y1, x2, y2 int
-		want                    bool
+		want                   bool
 	}{
 		{5, 5, 0, 0, 10, 10, true},
 		{0, 0, 0, 0, 10, 10, true},

@@ -164,6 +164,10 @@ Flags:
 | `--node-name` | `BOT_NODE_NAME` | advertise address | Human-readable node name for remote spawn targeting |
 | `--multicast-addr` | `BOT_MULTICAST_ADDR` | `239.255.13.37` | Multicast group for auto-discovery (used when no seeds) |
 | `--multicast-port` | `BOT_MULTICAST_PORT` | `19373` | Multicast port for auto-discovery |
+| `--tsnet-hostname` | `BOT_TSNET_HOSTNAME` | — | Tailscale hostname for remote swarm connectivity |
+| `--tsnet-dir` | `BOT_TSNET_DIR` | `<dir>/.tsnet` | Directory for tsnet state |
+| `--tsnet-authkey` | `BOT_TSNET_AUTHKEY` | — | Tailscale auth key for pre-authentication |
+| `--tsnet-controlurl` | `BOT_TSNET_CONTROLURL` | — | Custom coordination server URL (e.g. Headscale) |
 
 The watchdog joins the gossip cluster as `role=watchdog`. It:
 - Monitors bot processes and auto-restarts crashed bots

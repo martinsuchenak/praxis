@@ -9,6 +9,7 @@ import (
 	"github.com/paularlott/gossip"
 	"github.com/paularlott/gossip/codec"
 	"github.com/paularlott/logger"
+	"tailscale.com/tsnet"
 
 	"praxis/internal/bot"
 	"praxis/internal/sandbox"
@@ -16,32 +17,20 @@ import (
 
 // Config holds the parameters needed to start the watchdog cluster node.
 type Config struct {
-	// BindAddr is "host:port" for this gossip node (e.g. "0.0.0.0:7700").
-	BindAddr string
-	// AdvertiseAddr is the address announced to peers. Defaults to BindAddr.
-	AdvertiseAddr string
-	// Seeds are peer addresses to join on startup.
-	Seeds []string
-	// GlobalSecret is the fallback secret for bots that have no workspace secret.
-	GlobalSecret string
-	// ExtraMounts is the BOT_SHELL_MOUNTS value passed to the sandbox factory.
-	ExtraMounts string
-	// ShellAllowlist restricts which commands bots may execute via the proxy.
-	// Empty means all commands are allowed (except blocked ones).
-	ShellAllowlist []string
-	// AuthDisabled explicitly disables gossip secret validation.
-	// When false (default), requests are rejected if no secret is configured anywhere.
-	AuthDisabled bool
-	// NodeName is a human-readable name for this watchdog node.
-	// Advertised via gossip metadata so peers can target this node for remote spawn.
-	// Defaults to the advertise address if empty.
-	NodeName string
-	// MulticastAddr is the multicast group address for auto-discovery.
-	// Defaults to 239.255.13.37. Set to "" to disable auto-discovery.
-	MulticastAddr string
-	// MulticastPort is the UDP port for multicast auto-discovery.
-	// Defaults to 19373.
-	MulticastPort int
+	BindAddr        string
+	AdvertiseAddr   string
+	Seeds           []string
+	GlobalSecret    string
+	ExtraMounts     string
+	ShellAllowlist  []string
+	AuthDisabled    bool
+	NodeName        string
+	MulticastAddr   string
+	MulticastPort   int
+	TsnetHostname   string
+	TsnetDir        string
+	TsnetAuthKey    string
+	TsnetControlURL string
 }
 
 // ConfigFromEnv builds a Config from well-known environment variables.
@@ -107,14 +96,14 @@ func envInt(key string, def int) int {
 // Node is the watchdog gossip node. It owns the gossip.Cluster and registers
 // all application message handlers.
 type Node struct {
-	cluster *gossip.Cluster
-	manager *bot.Manager
-	sandbox sandbox.Sandbox
-	log     logger.Logger
-	cfg     Config
+	cluster  *gossip.Cluster
+	manager  *bot.Manager
+	sandbox  sandbox.Sandbox
+	log      logger.Logger
+	cfg      Config
+	tsnetSrv *tsnet.Server
 }
 
-// New creates a Node but does not start it. Call Start to join the cluster.
 func New(cfg Config, mgr *bot.Manager, sb sandbox.Sandbox, log logger.Logger) (*Node, error) {
 	gcfg := gossip.DefaultConfig()
 	gcfg.BindAddr = cfg.BindAddr
@@ -123,17 +112,35 @@ func New(cfg Config, mgr *bot.Manager, sb sandbox.Sandbox, log logger.Logger) (*
 	gcfg.Transport = gossip.NewSocketTransport(gcfg)
 	gcfg.Logger = log
 
+	var tsSrv *tsnet.Server
+	if cfg.TsnetHostname != "" {
+		var err error
+		tsSrv, err = setupTsnetTransport(gcfg, tsnetConfig{
+			Hostname:   cfg.TsnetHostname,
+			Dir:        cfg.TsnetDir,
+			AuthKey:    cfg.TsnetAuthKey,
+			ControlURL: cfg.TsnetControlURL,
+		}, log)
+		if err != nil {
+			return nil, fmt.Errorf("tsnet: %w", err)
+		}
+	}
+
 	gc, err := gossip.NewCluster(gcfg)
 	if err != nil {
+		if tsSrv != nil {
+			_ = tsSrv.Close()
+		}
 		return nil, fmt.Errorf("gossip cluster: %w", err)
 	}
 
 	n := &Node{
-		cluster: gc,
-		manager: mgr,
-		sandbox: sb,
-		log:     log,
-		cfg:     cfg,
+		cluster:  gc,
+		manager:  mgr,
+		sandbox:  sb,
+		log:      log,
+		cfg:      cfg,
+		tsnetSrv: tsSrv,
 	}
 
 	n.registerHandlers()
@@ -186,6 +193,9 @@ func (n *Node) Start(ctx context.Context) error {
 // Stop gracefully shuts down the gossip node.
 func (n *Node) Stop() {
 	n.cluster.Stop()
+	if n.tsnetSrv != nil {
+		_ = n.tsnetSrv.Close()
+	}
 }
 
 // Cluster returns the underlying gossip.Cluster for event handler registration

@@ -46,10 +46,10 @@ func TestNextBackoff(t *testing.T) {
 		crashes int
 		want    time.Duration
 	}{
-		{1, 2 * time.Second},  // 2^0 * 2s
-		{2, 4 * time.Second},  // 2^1 * 2s
-		{3, 8 * time.Second},  // 2^2 * 2s
-		{4, 16 * time.Second}, // 2^3 * 2s
+		{1, 2 * time.Second},   // 2^0 * 2s
+		{2, 4 * time.Second},   // 2^1 * 2s
+		{3, 8 * time.Second},   // 2^2 * 2s
+		{4, 16 * time.Second},  // 2^3 * 2s
 		{10, 60 * time.Second}, // capped at 60s
 		{20, 60 * time.Second}, // still capped
 	}

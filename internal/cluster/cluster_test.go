@@ -335,8 +335,8 @@ func TestHandleSpawnReqScopeViolation(t *testing.T) {
 func TestHandleSpawnReqWorkspaceViolation(t *testing.T) {
 	root := testutil.TempProject(t)
 	testutil.TempBot(t, root, "parent", &bot.BotConfig{
-		Scope:     bot.ScopeGateway,
-		Workspace: "ws1",
+		Scope:             bot.ScopeGateway,
+		Workspace:         "ws1",
 		AllowedWorkspaces: []string{"ws1"},
 	})
 	n := testNode(t, root, testutil.NewMockSandbox(), "")

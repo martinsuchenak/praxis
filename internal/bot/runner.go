@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	scriptlingllmlib "github.com/martinsuchenak/scriptling-llm-lib"
+	"github.com/paularlott/logger"
 	scriptling "github.com/paularlott/scriptling"
 	"github.com/paularlott/scriptling/extlibs"
 	"github.com/paularlott/scriptling/extlibs/agent"
@@ -22,14 +24,12 @@ import (
 	netgossip "github.com/paularlott/scriptling/extlibs/net/gossip"
 	"github.com/paularlott/scriptling/extlibs/net/multicast"
 	"github.com/paularlott/scriptling/stdlib"
-	scriptlingllmlib "github.com/martinsuchenak/scriptling-llm-lib"
-	"github.com/paularlott/logger"
 )
 
 const (
-	backoffBase    = 2 * time.Second
-	backoffMax     = 60 * time.Second
-	backoffFactor  = 2.0
+	backoffBase   = 2 * time.Second
+	backoffMax    = 60 * time.Second
+	backoffFactor = 2.0
 )
 
 // RunnerConfig holds everything a Runner needs to start a bot.

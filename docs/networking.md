@@ -81,3 +81,58 @@ Leader-specific behaviour can be added to bot brains (e.g. coordination tasks, h
 Set `BOT_GLOBAL_SECRET` (or `gossip_secret` per workspace in `workspaces.json`) to authenticate inter-bot messages. All messages include `_secret` in the payload; unauthenticated messages are dropped.
 
 Bots on different machines need the same secret in their `.env`.
+
+## Tailscale (tsnet)
+
+When `--tsnet-hostname` is set, the watchdog embeds a Tailscale node via tsnet — no `tailscaled` daemon required. This enables remote swarm connectivity over the Tailscale mesh.
+
+### How it works
+
+The watchdog opens **two gossip listeners**:
+1. **Local TCP** on `0.0.0.0:7700` — local bots connect over the LAN as usual
+2. **Tailscale TCP** — remote watchdogs and bots connect over the Tailscale network
+
+Both feed into the same gossip cluster. Outbound connections to Tailscale IPs (100.64.0.0/10) route through tsnet; all other addresses use regular TCP.
+
+### Configuration
+
+| Flag | Env | Description |
+|---|---|---|
+| `--tsnet-hostname` | `BOT_TSNET_HOSTNAME` | Tailscale hostname (required to enable) |
+| `--tsnet-dir` | `BOT_TSNET_DIR` | State directory (default: `<project>/.tsnet`) |
+| `--tsnet-authkey` | `BOT_TSNET_AUTHKEY`, `TS_AUTHKEY` | Auth key for pre-authenticated nodes |
+| `--tsnet-controlurl` | `BOT_TSNET_CONTROLURL`, `TS_CONTROL_URL` | Custom coordination server (e.g. Headscale) |
+
+### Example: Two machines
+
+Machine A:
+```bash
+praxis tui --tsnet-hostname praxis-node-a --tsnet-authkey tskey-auth-xxx
+```
+
+Machine B:
+```bash
+praxis watchdog --tsnet-hostname praxis-node-b --tsnet-authkey tskey-auth-yyy \
+  --seeds praxis-node-a:7700
+```
+
+Both watchdogs join the same gossip cluster over Tailscale. Bots on machine A can see and message bots on machine B (subject to scope rules).
+
+### First-time auth
+
+If no auth key is provided, tsnet prints an auth URL on first start. Visit the URL to approve the node. State is persisted in `--tsnet-dir` so subsequent starts don't require re-auth.
+
+### Isolation
+
+All existing isolation mechanisms work over Tailscale:
+- `BOT_GLOBAL_SECRET` authenticates cross-node messages
+- Per-workspace `gossip_secret` provides additional filtering
+- Scope rules (`open`, `isolated`, `family`, `gateway`) apply regardless of transport
+- Tailscale ACLs add a network-level layer on top
+
+### Headscale
+
+To use a self-hosted coordination server:
+```bash
+praxis watchdog --tsnet-hostname praxis-1 --tsnet-controlurl https://headscale.example.com
+```

@@ -14,8 +14,8 @@ func TestToInnerCWD(t *testing.T) {
 		{"/bots/mybot", "/bots/mybot", "/"},
 		{"/bots/mybot", "/bots/mybot/src", "/src"},
 		{"/bots/mybot", "/bots/mybot/src/pkg", "/src/pkg"},
-		{"/bots/mybot", "/etc", "/"},           // outside botDir → /
-		{"/bots/mybot", "/bots/other", "/"},    // sibling dir → /
+		{"/bots/mybot", "/etc", "/"},                // outside botDir → /
+		{"/bots/mybot", "/bots/other", "/"},         // sibling dir → /
 		{"/bots/mybot/", "/bots/mybot/src", "/src"}, // trailing slash on botDir
 	}
 	for _, tc := range cases {
@@ -44,9 +44,9 @@ func TestParseMounts(t *testing.T) {
 			[]string{"/a", "/b"},
 			[]string{"/ca", "/cb"},
 		},
-		{"bad-entry", 0, nil, nil, nil},                     // no colons
-		{"only:two", 0, nil, nil, nil},                      // only 2 fields
-		{" ro:/a:/b , rw:/c:/d ", 2, nil, nil, nil},         // trimmed spaces
+		{"bad-entry", 0, nil, nil, nil},             // no colons
+		{"only:two", 0, nil, nil, nil},              // only 2 fields
+		{" ro:/a:/b , rw:/c:/d ", 2, nil, nil, nil}, // trimmed spaces
 	}
 	for _, tc := range cases {
 		got := parseMounts(tc.env)

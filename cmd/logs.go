@@ -138,4 +138,3 @@ func tailFollow(ctx context.Context, path string) error {
 		}
 	}
 }
-

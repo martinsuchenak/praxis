@@ -42,7 +42,7 @@ type Dashboard struct {
 
 	botNameCmds []*gotui.Command
 
-	quitMu     sync.Mutex
+	quitMu      sync.Mutex
 	quitPending bool
 	quitCancel  context.CancelFunc
 }
@@ -639,7 +639,6 @@ func (d *Dashboard) cmdList() {
 }
 
 func (d *Dashboard) applyConfigAndRefresh(name string, args string) ([]string, string, bool) {
-	var configUpdates map[string]string
 	remaining, configUpdates := parseKeyValueArgs(args)
 
 	refresh := configUpdates["refresh"] == "true"
@@ -668,7 +667,8 @@ func (d *Dashboard) applyConfigAndRefresh(name string, args string) ([]string, s
 }
 
 func (d *Dashboard) cmdStartWithMessage(args string) {
-	remaining, name := args, ""
+	var remaining string
+	var name string
 	{
 		d.mu.Lock()
 		selected := d.selectedBot
@@ -823,36 +823,6 @@ func (d *Dashboard) refreshBotNameArgs() {
 	}
 }
 
-func (d *Dashboard) cmdStart(name string) {
-	if name == "" {
-		d.mu.Lock()
-		name = d.selectedBot
-		d.mu.Unlock()
-	}
-	if name == "" {
-		d.showInfo("usage: /start <bot>")
-		return
-	}
-	b, err := d.mgr.Get(name)
-	if err != nil {
-		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
-		return
-	}
-	switch b.State.Status {
-	case bot.StatusRunning, bot.StatusStarting:
-		d.showInfo(fmt.Sprintf("%s is already %s", name, b.State.Status))
-		return
-	}
-	if err := d.pool.Start(name); err != nil {
-		d.showInfo(fmt.Sprintf("start %s: %v", name, err))
-		return
-	}
-	if !d.vizActive {
-		d.selectBot(d.ui.Context(), name)
-	}
-	d.showInfo(fmt.Sprintf("started %s", name))
-}
-
 func (d *Dashboard) cmdStartAll() {
 	bots, err := d.mgr.List()
 	if err != nil {
@@ -864,12 +834,13 @@ func (d *Dashboard) cmdStartAll() {
 		switch b.State.Status {
 		case bot.StatusRunning, bot.StatusStarting:
 			skipped++
-			continue
+		default:
+			if err := d.pool.Start(b.Config.Name); err != nil {
+				d.showInfo(fmt.Sprintf("start %s: %v", b.Config.Name, err))
+				continue
+			}
+			started++
 		}
-		if err := d.mgr.SetStatus(b.Config.Name, bot.StatusCreated); err != nil {
-			continue
-		}
-		started++
 	}
 	d.showInfo(fmt.Sprintf("started=%d skipped=%d", started, skipped))
 }
@@ -991,7 +962,8 @@ func (d *Dashboard) cmdKillAll() {
 }
 
 func (d *Dashboard) cmdRestartWithConfig(args string) {
-	remaining, name := args, ""
+	var remaining string
+	var name string
 	{
 		d.mu.Lock()
 		selected := d.selectedBot
@@ -1031,28 +1003,6 @@ func (d *Dashboard) cmdRestartWithConfig(args string) {
 	if !d.vizActive {
 		d.selectBot(d.ui.Context(), name)
 	}
-}
-
-func (d *Dashboard) cmdRestart(name string) {
-	if name == "" {
-		d.mu.Lock()
-		name = d.selectedBot
-		d.mu.Unlock()
-	}
-	if name == "" {
-		d.showInfo("usage: /restart <bot>")
-		return
-	}
-	_ = d.pool.Kill(name)
-	time.Sleep(300 * time.Millisecond)
-	if err := d.pool.Start(name); err != nil {
-		d.showInfo(fmt.Sprintf("restart %s: %v", name, err))
-		return
-	}
-	if !d.vizActive {
-		d.selectBot(d.ui.Context(), name)
-	}
-	d.showInfo(fmt.Sprintf("restarted %s", name))
 }
 
 func (d *Dashboard) cmdRestartStale() {
@@ -1429,12 +1379,12 @@ var matrixGlyphs = []rune(
 		"∀∂∃∅∆∇∈∉∋∑∏∛∜⋅√∞∠∧∨∩∪∫∴∝≢≤≥⊂⊃⊆⊇")
 
 type matrixVis struct {
-	d          *Dashboard
-	panel      *gotui.Panel
-	drops      []drop
-	frame      int
-	pendingMu  sync.Mutex
-	pending    map[string]bool
+	d         *Dashboard
+	panel     *gotui.Panel
+	drops     []drop
+	frame     int
+	pendingMu sync.Mutex
+	pending   map[string]bool
 }
 
 type drop struct {
@@ -1446,23 +1396,23 @@ type drop struct {
 }
 
 type botNode struct {
-	name    string
-	status  string
-	ticks   int64
-	x, y    int
-	parent  string
-	leader  bool
-	stale   bool
-	avatar  []string
-	dir     string
-	active  bool
+	name   string
+	status string
+	ticks  int64
+	x, y   int
+	parent string
+	leader bool
+	stale  bool
+	avatar []string
+	dir    string
+	active bool
 }
 
 type maskInfo struct {
-	mask   byte
-	node   int
-	avRow  int
-	avCol  int
+	mask  byte
+	node  int
+	avRow int
+	avCol int
 }
 
 // Green brightness gradient from brightest to darkest
@@ -1940,32 +1890,32 @@ type faceSpec struct {
 var faceSpecs = []faceSpec{
 	{
 		halfWidths: []float64{4, 5.5, 6.5, 7, 6.5, 5.5, 4, 2},
-		eyeY: 2, eyeXOff: 2.5, eyeRX: 1, eyeRY: 0.8,
+		eyeY:       2, eyeXOff: 2.5, eyeRX: 1, eyeRY: 0.8,
 		mouthY: 5, mouthHW: 2,
 	},
 	{
 		halfWidths: []float64{0.5, 5, 6.5, 7, 7, 6.5, 5, 3},
-		eyeY: 3, eyeXOff: 2.5, eyeRX: 1.5, eyeRY: 0.5,
+		eyeY:       3, eyeXOff: 2.5, eyeRX: 1.5, eyeRY: 0.5,
 		mouthY: 5, mouthHW: 3, extras: "antenna",
 	},
 	{
 		halfWidths: []float64{5, 6.5, 7, 6, 5, 3.5, 2, 1},
-		eyeY: 2, eyeXOff: 2.2, eyeRX: 1.5, eyeRY: 1.2,
+		eyeY:       2, eyeXOff: 2.2, eyeRX: 1.5, eyeRY: 1.2,
 		mouthY: 5, mouthHW: 1,
 	},
 	{
 		halfWidths: []float64{3.5, 5.5, 7, 7, 6.5, 5, 3, 1},
-		eyeY: 3, eyeXOff: 2.5, eyeRX: 0.7, eyeRY: 1,
+		eyeY:       3, eyeXOff: 2.5, eyeRX: 0.7, eyeRY: 1,
 		mouthY: 5, mouthHW: 0.5, extras: "ears",
 	},
 	{
 		halfWidths: []float64{0.5, 5, 6.5, 7, 7, 6, 4, 2.5},
-		eyeY: 3, eyeXOff: 3, eyeRX: 2, eyeRY: 0.4,
+		eyeY:       3, eyeXOff: 3, eyeRX: 2, eyeRY: 0.4,
 		mouthY: -1, mouthHW: 0, extras: "visor",
 	},
 	{
 		halfWidths: []float64{4.5, 6, 6.5, 6.5, 6, 4.5, 3, 1.5},
-		eyeY: 2, eyeXOff: 2.2, eyeRX: 1.2, eyeRY: 1,
+		eyeY:       2, eyeXOff: 2.2, eyeRX: 1.2, eyeRY: 1,
 		mouthY: 5, mouthHW: 2, extras: "teeth",
 	},
 }

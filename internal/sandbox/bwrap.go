@@ -1,8 +1,8 @@
 package sandbox
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,8 +20,8 @@ var sysDirs = []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/et
 // The bot directory is bind-mounted as the container root; system dirs are
 // bind-mounted read-only. The workspace path (if any) is bound read-write.
 type BwrapSandbox struct {
-	bwrapPath    string
-	extraMounts  []mountSpec // parsed from BOT_SHELL_MOUNTS
+	bwrapPath   string
+	extraMounts []mountSpec // parsed from BOT_SHELL_MOUNTS
 }
 
 type mountSpec struct {

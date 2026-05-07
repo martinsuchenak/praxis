@@ -117,3 +117,12 @@ Commands that take a bot name (`/start`, `/stop`, `/kill`, `/restart`, `/refresh
 - Message types are dispatched by `type` string field in `internal/cluster/cluster.go:handleBotMsg`. New message types need: constant in `messages.go`, struct pair (Request/Reply), handler method, case in dispatcher.
 - CLI flags use `--kebab-case`. Env vars use `UPPER_SNAKE_CASE`.
 - Gossip metadata keys: `role` (watchdog/bot), `id` (bot name or "operator"), `node_name` (watchdog node name).
+
+## Tailscale (tsnet)
+
+Optional remote swarm connectivity via `tailscale.com/tsnet`. Enabled when `--tsnet-hostname` is set. See `docs/networking.md` for full details.
+
+- `internal/cluster/tsnet.go` — `dualListener` (accepts on both local TCP + tsnet), `tsnetDialer` (routes to tsnet for CGNAT/100.x.x.x addresses, fallback to regular TCP for LAN)
+- `gossip.Config.DialFunc` / `gossip.Config.ListenFunc` (v0.12.5+) inject tsnet's `Dial`/`Listen`
+- Local bots connect via LAN as usual — no tsnet dependency on the bot side
+- All isolation (secrets, scope, auth) works identically over both transports

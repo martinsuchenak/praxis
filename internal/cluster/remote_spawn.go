@@ -95,11 +95,11 @@ func (n *Node) handleRemoteSpawnReq(_ *gossip.Node, pkt *gossip.Packet) (interfa
 	}
 
 	childCfg := &bot.BotConfig{
-		Name:     req.Name,
-		Goal:     req.Goal,
-		Model:    req.Model,
-		Thinking: req.Thinking,
-		Brain:    req.Brain,
+		Name:              req.Name,
+		Goal:              req.Goal,
+		Model:             req.Model,
+		Thinking:          req.Thinking,
+		Brain:             req.Brain,
 		Workspace:         req.Workspace,
 		Scope:             req.Scope,
 		AllowedWorkspaces: req.AllowedWorkspaces,

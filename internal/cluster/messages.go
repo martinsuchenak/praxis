@@ -78,8 +78,8 @@ type RelayReply struct {
 
 // TerminateRequest is sent by a bot to request its own termination.
 type TerminateRequest struct {
-	Type  string `msgpack:"type"`
-	BotID string `msgpack:"bot_id"`
+	Type   string `msgpack:"type"`
+	BotID  string `msgpack:"bot_id"`
 	Secret string `msgpack:"_secret"`
 }
 

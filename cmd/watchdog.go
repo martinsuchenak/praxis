@@ -74,15 +74,35 @@ func watchdogCmd() *cli.Command {
 				EnvVars: []string{"BOT_NODE_NAME"},
 			},
 			&cli.StringFlag{
-				Name:         "multicast-addr",
-				Usage:        "Multicast group address for auto-discovery (default: 239.255.13.37)",
-				EnvVars:      []string{"BOT_MULTICAST_ADDR"},
+				Name:    "multicast-addr",
+				Usage:   "Multicast group address for auto-discovery (default: 239.255.13.37)",
+				EnvVars: []string{"BOT_MULTICAST_ADDR"},
 			},
 			&cli.IntFlag{
 				Name:         "multicast-port",
 				Usage:        "Multicast port for auto-discovery (default: 19373)",
 				DefaultValue: 19373,
 				EnvVars:      []string{"BOT_MULTICAST_PORT"},
+			},
+			&cli.StringFlag{
+				Name:    "tsnet-hostname",
+				Usage:   "Tailscale hostname for remote swarm connectivity",
+				EnvVars: []string{"BOT_TSNET_HOSTNAME"},
+			},
+			&cli.StringFlag{
+				Name:    "tsnet-dir",
+				Usage:   "Directory for tsnet state (default: <dir>/.tsnet)",
+				EnvVars: []string{"BOT_TSNET_DIR"},
+			},
+			&cli.StringFlag{
+				Name:    "tsnet-authkey",
+				Usage:   "Tailscale auth key for pre-authentication",
+				EnvVars: []string{"BOT_TSNET_AUTHKEY", "TS_AUTHKEY"},
+			},
+			&cli.StringFlag{
+				Name:    "tsnet-controlurl",
+				Usage:   "Custom coordination server URL (e.g. Headscale)",
+				EnvVars: []string{"BOT_TSNET_CONTROLURL", "TS_CONTROL_URL"},
 			},
 		},
 		Run: func(ctx context.Context, cmd *cli.Command) error {
@@ -120,17 +140,26 @@ func watchdogCmd() *cli.Command {
 				}
 			}
 
+			tsnetDir := cmd.GetString("tsnet-dir")
+			if tsnetDir == "" {
+				tsnetDir = app.Dir + "/.tsnet"
+			}
+
 			clusterCfg := cluster.Config{
-				BindAddr:       "0.0.0.0:" + port,
-				AdvertiseAddr:  advertise,
-				Seeds:          seeds,
-				GlobalSecret:   cmd.GetString("secret"),
-				ExtraMounts:    cmd.GetString("mounts"),
-				ShellAllowlist: parseCSVFlag(cmd.GetString("allowlist")),
-				AuthDisabled:   cmd.GetBool("auth-disabled"),
-				NodeName:       cmd.GetString("node-name"),
-				MulticastAddr:  cmd.GetString("multicast-addr"),
-				MulticastPort:  cmd.GetInt("multicast-port"),
+				BindAddr:        "0.0.0.0:" + port,
+				AdvertiseAddr:   advertise,
+				Seeds:           seeds,
+				GlobalSecret:    cmd.GetString("secret"),
+				ExtraMounts:     cmd.GetString("mounts"),
+				ShellAllowlist:  parseCSVFlag(cmd.GetString("allowlist")),
+				AuthDisabled:    cmd.GetBool("auth-disabled"),
+				NodeName:        cmd.GetString("node-name"),
+				MulticastAddr:   cmd.GetString("multicast-addr"),
+				MulticastPort:   cmd.GetInt("multicast-port"),
+				TsnetHostname:   cmd.GetString("tsnet-hostname"),
+				TsnetDir:        tsnetDir,
+				TsnetAuthKey:    cmd.GetString("tsnet-authkey"),
+				TsnetControlURL: cmd.GetString("tsnet-controlurl"),
 			}
 
 			node, err := cluster.New(clusterCfg, app.Manager, sb, log)
