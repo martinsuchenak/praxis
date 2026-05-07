@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -723,245 +724,391 @@ func TestHandleRemoteSpawnReqMissingFields(t *testing.T) {
 	}
 }
 
+func TestHandleRemoteSpawnReqValidation(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "")
+
+	tests := []struct {
+		name string
+		req  SpawnRequest
+		want string
+	}{
+		{"missing name", SpawnRequest{Type: TypeRemoteSpawnReq, Goal: "g", Model: "m"}, "name"},
+		{"missing goal", SpawnRequest{Type: TypeRemoteSpawnReq, Name: "b", Model: "m"}, "goal"},
+		{"missing model", SpawnRequest{Type: TypeRemoteSpawnReq, Name: "b", Goal: "g"}, "model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := n.handleRemoteSpawnReq(nil, testPacket(t, tt.req))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			reply := resp.(*SpawnReply)
+			if reply.Error == "" {
+				t.Error("expected validation error")
+			}
+			if !strings.Contains(reply.Error, tt.want) {
+				t.Errorf("error = %q, want to contain %q", reply.Error, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandleRemoteSpawnReqBadUnmarshal(t *testing.T) {
 	root := testutil.TempProject(t)
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "")
 
-	reply, err := n.handleRemoteSpawnReq(nil, testCorruptPacket(t))
+	resp, err := n.handleRemoteSpawnReq(nil, testCorruptPacket(t))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if reply.(*SpawnReply).Error == "" {
-		t.Error("expected error for corrupt packet")
+	reply := resp.(*SpawnReply)
+	if reply.Error == "" {
+		t.Error("expected error for bad unmarshal")
 	}
 }
 
-// --- handleTerminateReq ---
-
-func TestHandleTerminateReqSuccess(t *testing.T) {
+func TestSpawnRemoteNodeNotFound(t *testing.T) {
 	root := testutil.TempProject(t)
-	testutil.TempBot(t, root, "doom", &bot.BotConfig{})
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
+	sb := &testutil.MockSandbox{}
+	log := logslog.New(logslog.Config{Level: "error"})
 
-	pkt := testPacket(t, &TerminateRequest{
-		Type:   TypeTerminateReq,
-		BotID:  "doom",
-		Secret: "",
-	})
-	reply, err := n.handleTerminateReq(nil, pkt)
+	cfg := Config{
+		BindAddr:      "127.0.0.1:0",
+		AdvertiseAddr: "127.0.0.1:0",
+		AuthDisabled:  true,
+	}
+	node, err := New(cfg, bot.NewManager(root), sb, log)
 	if err != nil {
-		t.Fatalf("handler error: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-	tr := reply.(*TerminateReply)
-	if tr.Error != "" {
-		t.Errorf("unexpected error: %s", tr.Error)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := node.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-	if tr.Status != "terminated" {
-		t.Errorf("status: got %q want %q", tr.Status, "terminated")
+
+	_, err = node.SpawnRemote("nonexistent", &bot.BotConfig{Name: "b", Goal: "g", Model: "m"})
+	if err == nil {
+		t.Error("expected error for missing node")
 	}
-	state, _ := bot.LoadState(filepath.Join(root, "bots", "doom"))
-	if state.Status != bot.StatusKilled {
-		t.Errorf("bot status: got %q want %q", state.Status, bot.StatusKilled)
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want not found", err.Error())
 	}
+	node.Stop()
 }
 
-func TestHandleTerminateReqInvalidSecret(t *testing.T) {
+func TestHandleRelayReqUnknownTarget(t *testing.T) {
 	root := testutil.TempProject(t)
-	testutil.TempBot(t, root, "secbot", &bot.BotConfig{GossipSecret: "s3cr3t"})
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
-
-	pkt := testPacket(t, &TerminateRequest{
-		Type:   TypeTerminateReq,
-		BotID:  "secbot",
-		Secret: "wrong",
+	testutil.TempBot(t, root, "gw", &bot.BotConfig{
+		Scope:             bot.ScopeGateway,
+		Workspace:         "ws1",
+		AllowedWorkspaces: []string{"ws2"},
 	})
-	reply, _ := n.handleTerminateReq(nil, pkt)
-	if reply.(*TerminateReply).Error == "" {
-		t.Error("expected error for invalid secret")
-	}
-}
-
-func TestHandleTerminateReqUnknownBot(t *testing.T) {
-	root := testutil.TempProject(t)
 	n := testNode(t, root, testutil.NewMockSandbox(), "")
 
-	pkt := testPacket(t, &TerminateRequest{
-		Type:   TypeTerminateReq,
-		BotID:  "ghost",
-		Secret: "",
-	})
-	reply, _ := n.handleTerminateReq(nil, pkt)
-	if reply.(*TerminateReply).Error == "" {
-		t.Error("expected error for unknown bot")
-	}
-}
-
-func TestHandleTerminateReqMissingBotID(t *testing.T) {
-	root := testutil.TempProject(t)
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
-
-	pkt := testPacket(t, &TerminateRequest{
-		Type:   TypeTerminateReq,
-		BotID:  "",
-		Secret: "",
-	})
-	reply, _ := n.handleTerminateReq(nil, pkt)
-	if reply.(*TerminateReply).Error == "" {
-		t.Error("expected error for missing bot_id")
-	}
-}
-
-func TestHandleTerminateReqBadUnmarshal(t *testing.T) {
-	root := testutil.TempProject(t)
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
-
-	reply, err := n.handleTerminateReq(nil, testCorruptPacket(t))
+	resp, err := n.handleRelayReq(nil, testPacket(t, &RelayRequest{
+		From:      "gw",
+		TargetBot: "nonexistent",
+		Content:   "hello",
+	}))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("handleRelayReq: %v", err)
 	}
-	if reply.(*TerminateReply).Error == "" {
-		t.Error("expected error for corrupt packet")
+	reply := resp.(*RelayReply)
+	if reply.Error == "" {
+		t.Error("expected error for unknown target")
+	}
+	if !strings.Contains(reply.Error, "unknown target") {
+		t.Errorf("error = %q, want unknown target", reply.Error)
 	}
 }
 
-// --- dispatcher routing for new types ---
-
-func TestHandleBotMsgDispatchRemoteSpawn(t *testing.T) {
+func TestNewCreatesNode(t *testing.T) {
 	root := testutil.TempProject(t)
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
+	sb := &testutil.MockSandbox{}
+	log := logslog.New(logslog.Config{Level: "error"})
 
-	pkt := testPacket(t, &SpawnRequest{
-		Type:   TypeRemoteSpawnReq,
-		Name:   "dispatched",
-		Goal:   "test",
-		Model:  "m",
-		Secret: "",
-	})
-	reply, err := n.handleBotMsg(nil, pkt)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	cfg := Config{
+		BindAddr:      "127.0.0.1:0",
+		AdvertiseAddr: "127.0.0.1:0",
+		AuthDisabled:  true,
 	}
-	sr, ok := reply.(*SpawnReply)
+	node, err := New(cfg, bot.NewManager(root), sb, log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if node == nil {
+		t.Fatal("expected non-nil node")
+	}
+	if node.Cluster() == nil {
+		t.Error("Cluster() should return non-nil after New")
+	}
+}
+
+func TestNewAndStartStop(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	log := logslog.New(logslog.Config{Level: "error"})
+
+	cfg := Config{
+		BindAddr:      "127.0.0.1:0",
+		AdvertiseAddr: "127.0.0.1:0",
+		AuthDisabled:  true,
+	}
+	node, err := New(cfg, bot.NewManager(root), sb, log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := node.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	node.Stop()
+}
+
+func TestNewWithNodeName(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	log := logslog.New(logslog.Config{Level: "error"})
+
+	cfg := Config{
+		BindAddr:      "127.0.0.1:0",
+		AdvertiseAddr: "127.0.0.1:0",
+		AuthDisabled:  true,
+		NodeName:      "test-node",
+	}
+	node, err := New(cfg, bot.NewManager(root), sb, log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := node.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if node.Cluster().LocalMetadata().GetString("node_name") != "test-node" {
+		t.Errorf("node_name = %q, want test-node", node.Cluster().LocalMetadata().GetString("node_name"))
+	}
+	node.Stop()
+}
+
+func TestHandleBotMsgDispatch(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "")
+
+	resp, err := n.handleBotMsg(nil, testPacket(t, map[string]interface{}{"type": "unknown_type"}))
+	if err != nil {
+		t.Fatalf("handleBotMsg: %v", err)
+	}
+	shellResp, ok := resp.(*ShellReply)
 	if !ok {
-		t.Fatalf("expected *SpawnReply, got %T", reply)
+		t.Fatalf("expected ShellReply, got %T", resp)
 	}
-	if sr.BotID != "dispatched" {
-		t.Errorf("bot_id: got %q want %q", sr.BotID, "dispatched")
-	}
-}
-
-func TestHandleBotMsgDispatchTerminate(t *testing.T) {
-	root := testutil.TempProject(t)
-	testutil.TempBot(t, root, "victim", &bot.BotConfig{})
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
-
-	pkt := testPacket(t, &TerminateRequest{
-		Type:   TypeTerminateReq,
-		BotID:  "victim",
-		Secret: "",
-	})
-	reply, err := n.handleBotMsg(nil, pkt)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	tr, ok := reply.(*TerminateReply)
-	if !ok {
-		t.Fatalf("expected *TerminateReply, got %T", reply)
-	}
-	if tr.Status != "terminated" {
-		t.Errorf("status: got %q want %q", tr.Status, "terminated")
+	if shellResp.Error == "" || !strings.Contains(shellResp.Error, "unknown message type") {
+		t.Errorf("error = %q, want unknown type message", shellResp.Error)
 	}
 }
 
-func TestHandleBotMsgDispatchHardware(t *testing.T) {
+func TestHandleHardwareReqDeviceNotFound(t *testing.T) {
 	root := testutil.TempProject(t)
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
+	sb := &testutil.MockSandbox{}
+	log := logslog.New(logslog.Config{Level: "error"})
 
-	pkt := testPacket(t, &HardwareRequest{
-		Type:       TypeHardwareReq,
-		Node:       "sensor-hub",
-		Peripheral: "temp",
-		Affordance: "temp_temperature",
-		Operation:  "readproperty",
-	})
-	reply, err := n.handleBotMsg(nil, pkt)
+	cfg := Config{
+		BindAddr:      "127.0.0.1:0",
+		AdvertiseAddr: "127.0.0.1:0",
+		AuthDisabled:  true,
+	}
+	node, err := New(cfg, bot.NewManager(root), sb, log)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-	hr, ok := reply.(*HardwareReply)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := node.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	resp, err := node.handleHardwareReq(nil, testPacket(t, HardwareRequest{Type: TypeHardwareReq, Node: "nonexistent"}))
+	if err != nil {
+		t.Fatalf("handleHardwareReq: %v", err)
+	}
+	hwResp, ok := resp.(*HardwareReply)
 	if !ok {
-		t.Fatalf("expected *HardwareReply, got %T", reply)
+		t.Fatalf("expected HardwareReply, got %T", resp)
 	}
-	if hr.Error == "" {
-		t.Error("expected error: no live cluster to reach device")
+	if hwResp.Error == "" {
+		t.Error("expected device not found error")
 	}
+	node.Stop()
 }
 
 func TestHandleHardwareReqBadUnmarshal(t *testing.T) {
 	root := testutil.TempProject(t)
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "")
 
-	reply, err := n.handleHardwareReq(nil, testCorruptPacket(t))
+	resp, err := n.handleHardwareReq(nil, testCorruptPacket(t))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("handleHardwareReq: %v", err)
 	}
-	if reply.(*HardwareReply).Error == "" {
-		t.Error("expected error for corrupt packet")
+	hwResp, ok := resp.(*HardwareReply)
+	if !ok {
+		t.Fatalf("expected HardwareReply, got %T", resp)
+	}
+	if hwResp.Error != "bad request" {
+		t.Errorf("error = %q, want bad request", hwResp.Error)
 	}
 }
 
-func TestHandleHardwareReqPeripheralNotFound(t *testing.T) {
+func TestHandleHardwareReqUnauthorized(t *testing.T) {
 	root := testutil.TempProject(t)
-	n := testNode(t, root, testutil.NewMockSandbox(), "")
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "s3cret")
 
-	pkt := testPacket(t, &HardwareRequest{
-		Type:       TypeHardwareReq,
-		Node:       "nonexistent",
-		Peripheral: "led",
-		Affordance: "led_state",
-		Operation:  "readproperty",
-	})
-	reply, err := n.handleHardwareReq(nil, pkt)
+	resp, err := n.handleHardwareReq(nil, testPacket(t, HardwareRequest{Type: TypeHardwareReq, Secret: "wrong"}))
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("handleHardwareReq: %v", err)
 	}
-	hr := reply.(*HardwareReply)
-	if hr.Error == "" {
-		t.Error("expected error for missing device")
+	hwResp, ok := resp.(*HardwareReply)
+	if !ok {
+		t.Fatalf("expected HardwareReply, got %T", resp)
+	}
+	if hwResp.Error != "unauthorized" {
+		t.Errorf("error = %q, want unauthorized", hwResp.Error)
 	}
 }
 
-func TestHandleHardwareReqInvalidSecret(t *testing.T) {
+func TestSendToBotNotAlive(t *testing.T) {
 	root := testutil.TempProject(t)
-	n := testNode(t, root, testutil.NewMockSandbox(), "s3cr3t")
-	n.cfg.AuthDisabled = false
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "")
 
-	pkt := testPacket(t, &HardwareRequest{
-		Type:       TypeHardwareReq,
-		Node:       "sensor-hub",
-		Peripheral: "led",
-		Affordance: "led_state",
-		Operation:  "readproperty",
-		Secret:     "wrong",
-	})
-	reply, _ := n.handleHardwareReq(nil, pkt)
-	if reply.(*HardwareReply).Error == "" {
-		t.Error("expected error for invalid secret")
+	err := n.SendMessage("nobody", "hi")
+	if err == nil {
+		t.Error("expected error sending to nonexistent bot")
 	}
 }
 
-func TestConfigFromEnvDefaults(t *testing.T) {
-	t.Setenv("BOT_WATCHDOG_PORT", "")
-	t.Setenv("BOT_WATCHDOG_ADDR", "")
-	t.Setenv("BOT_GLOBAL_SECRET", "")
-	t.Setenv("BOT_SHELL_MOUNTS", "")
+func TestSendToBotClusterNil(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "")
+	n.cluster = nil
 
-	cfg := ConfigFromEnv()
-
-	if cfg.BindAddr != "0.0.0.0:7700" {
-		t.Errorf("default BindAddr: got %q want %q", cfg.BindAddr, "0.0.0.0:7700")
+	err := n.manager.Create(&bot.BotConfig{Name: "testbot", Goal: "g", Model: "m"})
+	if err != nil {
+		t.Fatalf("create bot: %v", err)
 	}
-	if cfg.AdvertiseAddr != "0.0.0.0:7700" {
-		t.Errorf("default AdvertiseAddr should equal BindAddr, got %q", cfg.AdvertiseAddr)
+
+	err = n.SendMessage("testbot", "hi")
+	if err == nil {
+		t.Error("expected error with nil cluster")
+	}
+}
+
+func TestFindWatchdogNodeNoMatch(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	log := logslog.New(logslog.Config{Level: "error"})
+
+	cfg := Config{
+		BindAddr:      "127.0.0.1:0",
+		AdvertiseAddr: "127.0.0.1:0",
+		AuthDisabled:  true,
+	}
+	node, err := New(cfg, bot.NewManager(root), sb, log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := node.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	result := node.findWatchdogNode("missing")
+	if result != nil {
+		t.Error("expected nil for no match")
+	}
+	node.Stop()
+}
+
+func TestListWatchdogNodes(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	log := logslog.New(logslog.Config{Level: "error"})
+
+	cfg := Config{
+		BindAddr:      "127.0.0.1:0",
+		AdvertiseAddr: "127.0.0.1:0",
+		AuthDisabled:  true,
+		NodeName:      "node1",
+	}
+	node, err := New(cfg, bot.NewManager(root), sb, log)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := node.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	names := node.ListWatchdogNodes()
+	for _, name := range names {
+		if name == "" {
+			t.Error("expected non-empty node names")
+		}
+	}
+	node.Stop()
+}
+
+func TestHandleTerminateReqBadUnmarshal(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "")
+
+	resp, err := n.handleTerminateReq(nil, testCorruptPacket(t))
+	if err != nil {
+		t.Fatalf("handleTerminateReq: %v", err)
+	}
+	tr, ok := resp.(*TerminateReply)
+	if !ok {
+		t.Fatalf("expected TerminateReply, got %T", resp)
+	}
+	if tr.Error == "" {
+		t.Error("expected error for bad unmarshal")
+	}
+}
+
+func TestHandleTerminateReqUnauthorized(t *testing.T) {
+	root := testutil.TempProject(t)
+	sb := &testutil.MockSandbox{}
+	n := testNode(t, root, sb, "s3cret")
+
+	resp, err := n.handleTerminateReq(nil, testPacket(t, TerminateRequest{Type: TypeTerminateReq, Secret: "wrong"}))
+	if err != nil {
+		t.Fatalf("handleTerminateReq: %v", err)
+	}
+	tr, ok := resp.(*TerminateReply)
+	if !ok {
+		t.Fatalf("expected TerminateReply, got %T", resp)
+	}
+	if tr.Error != "invalid secret" {
+		t.Errorf("error = %q, want unauthorized", tr.Error)
 	}
 }

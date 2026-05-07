@@ -1,18 +1,27 @@
 package cmd
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"praxis/internal/config"
 )
 
 func defaultModel() string {
-	return os.Getenv("BOT_MODEL")
+	cfg := config.Get()
+	if cfg == nil {
+		return os.Getenv("BOT_MODEL")
+	}
+	return cfg.Bot.Model
 }
 
 func defaultGlobalSecret() string {
-	return os.Getenv("BOT_GLOBAL_SECRET")
+	cfg := config.Get()
+	if cfg == nil {
+		return os.Getenv("BOT_GLOBAL_SECRET")
+	}
+	return cfg.Watchdog.Secret
 }
 
 func parseCSVFlag(val string) []string {
@@ -29,10 +38,11 @@ func parseCSVFlag(val string) []string {
 	return out
 }
 
-// resolveModelsDir returns the absolute path to the GGUF models directory.
-// If raw is empty, it defaults to <projectDir>/models. Returns "" if the
-// directory does not exist.
 func resolveModelsDir(raw, projectDir string) string {
+	cfg := config.Get()
+	if cfg != nil {
+		return cfg.ModelsDirResolved(projectDir)
+	}
 	p := raw
 	if p == "" {
 		p = filepath.Join(projectDir, "models")
@@ -47,34 +57,13 @@ func resolveModelsDir(raw, projectDir string) string {
 	return abs
 }
 
-// resolveWorkspace looks up a workspace name in workspaces.json and returns
-// (path, gossipSecret, defaultScope). Returns empty strings if not found.
 func resolveWorkspace(projectDir, name string) (path, gossipSecret, defaultScope string) {
-	data, err := os.ReadFile(filepath.Join(projectDir, "workspaces.json"))
-	if err != nil {
-		return
-	}
-	var workspaces map[string]interface{}
-	if err := json.Unmarshal(data, &workspaces); err != nil {
-		return
-	}
-	entry, ok := workspaces[name]
-	if !ok {
-		return
-	}
-	switch v := entry.(type) {
-	case string:
-		path = v
-	case map[string]interface{}:
-		if p, ok := v["path"].(string); ok {
-			path = p
-		}
-		if s, ok := v["gossip_secret"].(string); ok {
-			gossipSecret = s
-		}
-		if ds, ok := v["default_scope"].(string); ok {
-			defaultScope = ds
+	cfg := config.Get()
+	if cfg != nil {
+		p, s, sc, ok := cfg.ResolveWorkspace(name)
+		if ok {
+			return p, s, sc
 		}
 	}
-	return
+	return "", "", ""
 }

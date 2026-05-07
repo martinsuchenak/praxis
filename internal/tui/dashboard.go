@@ -3,7 +3,6 @@ package tui
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
@@ -20,6 +19,7 @@ import (
 
 	"praxis/internal/bot"
 	"praxis/internal/cluster"
+	"praxis/internal/config"
 	"praxis/internal/sandbox"
 )
 
@@ -33,6 +33,7 @@ type Dashboard struct {
 	node *cluster.Node
 	sb   sandbox.Sandbox
 	log  logger.Logger
+	cfg  *config.Config
 
 	mu          sync.Mutex
 	selectedBot string
@@ -47,13 +48,14 @@ type Dashboard struct {
 	quitCancel  context.CancelFunc
 }
 
-func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.Sandbox, log logger.Logger) *Dashboard {
+func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.Sandbox, log logger.Logger, cfg *config.Config) *Dashboard {
 	d := &Dashboard{
 		mgr:  mgr,
 		pool: pool,
 		node: node,
 		sb:   sb,
 		log:  log,
+		cfg:  cfg,
 	}
 
 	themeNames := gotui.ThemeNames()
@@ -254,7 +256,7 @@ func (d *Dashboard) refreshDetailPanel() {
 
 	bots, _ := d.mgr.List()
 
-	// Model usage + queue stats (from models.json + actual bots)
+	// Model usage + queue stats (from config + actual bots)
 	modelBots := make(map[string][]string)
 	for _, b := range bots {
 		m := b.Config.Model
@@ -271,29 +273,19 @@ func (d *Dashboard) refreshDetailPanel() {
 	}
 	models := make(map[string]*modelInfo)
 
-	// Seed from models.json
-	projectDir := filepath.Dir(d.mgr.BotsDir)
-	if data, err := os.ReadFile(filepath.Join(projectDir, "models.json")); err == nil {
-		var list []interface{}
-		if json.Unmarshal(data, &list) == nil {
-			for _, entry := range list {
-				m, ok := entry.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				id, _ := m["id"].(string)
-				if id == "" {
-					continue
-				}
-				mi := &modelInfo{}
-				if label, ok := m["label"].(string); ok {
-					mi.Label = label
-				}
-				if conc, ok := m["concurrency"].(float64); ok && conc > 0 {
-					mi.Concurrency = int(conc)
-				}
-				models[id] = mi
+	if d.cfg != nil {
+		for _, m := range d.cfg.Models.Catalog {
+			if m.ID == "" {
+				continue
 			}
+			mi := &modelInfo{}
+			if m.Label != "" {
+				mi.Label = m.Label
+			}
+			if m.Concurrency > 0 {
+				mi.Concurrency = m.Concurrency
+			}
+			models[m.ID] = mi
 		}
 	}
 
@@ -368,26 +360,15 @@ func (d *Dashboard) refreshDetailPanel() {
 		wsMap[w].Bots = append(wsMap[w].Bots, b.Config.Name)
 	}
 
-	// Load workspace details from workspaces.json
-	projectDir = filepath.Dir(d.mgr.BotsDir)
-	if data, readErr := os.ReadFile(filepath.Join(projectDir, "workspaces.json")); readErr == nil {
-		var wsConfig map[string]interface{}
-		if jsonErr := json.Unmarshal(data, &wsConfig); jsonErr == nil {
-			for name, entry := range wsConfig {
-				if _, ok := wsMap[name]; !ok {
-					wsMap[name] = &wsInfo{}
-				}
-				switch v := entry.(type) {
-				case string:
-					wsMap[name].Path = v
-				case map[string]interface{}:
-					if p, ok := v["path"].(string); ok {
-						wsMap[name].Path = p
-					}
-					if ds, ok := v["default_scope"].(string); ok {
-						wsMap[name].Scope = ds
-					}
-				}
+	if wsConfig := d.cfg; wsConfig != nil {
+		for _, ws := range wsConfig.Workspaces {
+			name := ws.Name
+			if _, ok := wsMap[name]; !ok {
+				wsMap[name] = &wsInfo{}
+			}
+			wsMap[name].Path = ws.Path
+			if ws.Scope != "" {
+				wsMap[name].Scope = ws.Scope
 			}
 		}
 	}
@@ -1229,8 +1210,8 @@ func (d *Dashboard) cmdSpawn(args string) {
 		return
 	}
 	model := opts["model"]
-	if model == "" {
-		model = os.Getenv("BOT_MODEL")
+	if model == "" && d.cfg != nil {
+		model = d.cfg.Bot.Model
 	}
 	thinking := true
 	if v, ok := opts["thinking"]; ok {
@@ -2139,15 +2120,8 @@ func (d *Dashboard) cmdWorkspace(args string) {
 }
 
 func (d *Dashboard) wsList() {
-	projectDir := filepath.Dir(d.mgr.BotsDir)
-	data, err := os.ReadFile(filepath.Join(projectDir, "workspaces.json"))
-	if err != nil {
-		d.showInfo("no workspaces.json found")
-		return
-	}
-	var workspaces map[string]interface{}
-	if err := json.Unmarshal(data, &workspaces); err != nil {
-		d.showInfo(fmt.Sprintf("parse error: %v", err))
+	if d.cfg == nil || len(d.cfg.Workspaces) == 0 {
+		d.showInfo("no workspaces configured")
 		return
 	}
 
@@ -2156,7 +2130,6 @@ func (d *Dashboard) wsList() {
 	var sb strings.Builder
 	sb.WriteString(main.Styled(theme.Primary, "━━━ workspaces ━━━") + "\n\n")
 
-	// Count bots per workspace
 	bots, _ := d.mgr.List()
 	wsBots := make(map[string][]string)
 	for _, b := range bots {
@@ -2167,26 +2140,19 @@ func (d *Dashboard) wsList() {
 		wsBots[w] = append(wsBots[w], b.Config.Name)
 	}
 
-	if len(workspaces) == 0 {
+	if len(d.cfg.Workspaces) == 0 {
 		sb.WriteString("  (none configured)\n")
 	}
-	for name, entry := range workspaces {
-		fmt.Fprintf(&sb, "  %s\n", main.Styled(theme.Primary, name))
-		switch v := entry.(type) {
-		case string:
-			fmt.Fprintf(&sb, "    path: %s\n", v)
-		case map[string]interface{}:
-			if p, ok := v["path"].(string); ok {
-				fmt.Fprintf(&sb, "    path: %s\n", p)
-			}
-			if s, ok := v["gossip_secret"].(string); ok {
-				fmt.Fprintf(&sb, "    secret: %s\n", maskSecret(s))
-			}
-			if ds, ok := v["default_scope"].(string); ok {
-				fmt.Fprintf(&sb, "    scope: %s\n", ds)
-			}
+	for _, ws := range d.cfg.Workspaces {
+		fmt.Fprintf(&sb, "  %s\n", main.Styled(theme.Primary, ws.Name))
+		fmt.Fprintf(&sb, "    path: %s\n", ws.Path)
+		if ws.Secret != "" {
+			fmt.Fprintf(&sb, "    secret: %s\n", maskSecret(ws.Secret))
 		}
-		if bots, ok := wsBots[name]; ok {
+		if ws.Scope != "" {
+			fmt.Fprintf(&sb, "    scope: %s\n", ws.Scope)
+		}
+		if bots, ok := wsBots[ws.Name]; ok {
 			fmt.Fprintf(&sb, "    bots: %d (%s)\n", len(bots), strings.Join(bots, ", "))
 		}
 	}
@@ -2195,7 +2161,7 @@ func (d *Dashboard) wsList() {
 
 func (d *Dashboard) wsAdd(parts []string) {
 	if len(parts) < 2 {
-		d.showInfo("usage: /workspace add <name> <path> [gossip_secret=<s>] [scope=<s>]")
+		d.showInfo("usage: /workspace add <name> <path> [secret=<s>] [scope=<s>]")
 		return
 	}
 	name := parts[0]
@@ -2207,26 +2173,21 @@ func (d *Dashboard) wsAdd(parts []string) {
 		}
 	}
 
-	projectDir := filepath.Dir(d.mgr.BotsDir)
-	wsFile := filepath.Join(projectDir, "workspaces.json")
-
-	workspaces := make(map[string]interface{})
-	if data, err := os.ReadFile(wsFile); err == nil {
-		_ = json.Unmarshal(data, &workspaces)
+	entry := config.WorkspaceEntry{
+		Name: name,
+		Path: wsPath,
 	}
-
-	entry := map[string]interface{}{
-		"path": wsPath,
-	}
-	if s, ok := opts["gossip_secret"]; ok {
-		entry["gossip_secret"] = s
+	if s, ok := opts["secret"]; ok {
+		entry.Secret = s
 	}
 	if s, ok := opts["scope"]; ok {
-		entry["default_scope"] = s
+		entry.Scope = s
 	}
-	workspaces[name] = entry
 
-	if err := writeJSON(wsFile, workspaces); err != nil {
+	d.cfg.SetWorkspace(entry)
+
+	projectDir := filepath.Dir(d.mgr.BotsDir)
+	if err := d.cfg.Save(projectDir); err != nil {
 		d.showInfo(fmt.Sprintf("write error: %v", err))
 		return
 	}
@@ -2240,7 +2201,6 @@ func (d *Dashboard) wsRemove(parts []string) {
 	}
 	name := parts[0]
 
-	// Check if any bots use this workspace
 	bots, _ := d.mgr.List()
 	for _, b := range bots {
 		if b.Config.Workspace == name {
@@ -2249,21 +2209,13 @@ func (d *Dashboard) wsRemove(parts []string) {
 		}
 	}
 
-	projectDir := filepath.Dir(d.mgr.BotsDir)
-	wsFile := filepath.Join(projectDir, "workspaces.json")
-
-	workspaces := make(map[string]interface{})
-	if data, err := os.ReadFile(wsFile); err == nil {
-		_ = json.Unmarshal(data, &workspaces)
-	}
-
-	if _, ok := workspaces[name]; !ok {
+	if !d.cfg.RemoveWorkspace(name) {
 		d.showInfo(fmt.Sprintf("workspace %s not found", name))
 		return
 	}
-	delete(workspaces, name)
 
-	if err := writeJSON(wsFile, workspaces); err != nil {
+	projectDir := filepath.Dir(d.mgr.BotsDir)
+	if err := d.cfg.Save(projectDir); err != nil {
 		d.showInfo(fmt.Sprintf("write error: %v", err))
 		return
 	}
@@ -2271,37 +2223,17 @@ func (d *Dashboard) wsRemove(parts []string) {
 }
 
 func (d *Dashboard) resolveWorkspace(name string) (path, gossipSecret, defaultScope string, err error) {
-	projectDir := filepath.Dir(d.mgr.BotsDir)
-	data, readErr := os.ReadFile(filepath.Join(projectDir, "workspaces.json"))
-	if readErr != nil {
-		return "", "", "", fmt.Errorf("workspaces.json not found")
+	if d.cfg == nil {
+		return "", "", "", fmt.Errorf("config not loaded")
 	}
-	var workspaces map[string]interface{}
-	if jsonErr := json.Unmarshal(data, &workspaces); jsonErr != nil {
-		return "", "", "", fmt.Errorf("workspaces.json parse error: %v", jsonErr)
-	}
-	entry, ok := workspaces[name]
+	p, s, sc, ok := d.cfg.ResolveWorkspace(name)
 	if !ok {
 		return "", "", "", fmt.Errorf("workspace %q not found", name)
 	}
-	switch v := entry.(type) {
-	case string:
-		path = v
-	case map[string]interface{}:
-		if p, ok := v["path"].(string); ok {
-			path = p
-		}
-		if s, ok := v["gossip_secret"].(string); ok {
-			gossipSecret = s
-		}
-		if ds, ok := v["default_scope"].(string); ok {
-			defaultScope = ds
-		}
-	}
-	if path == "" {
+	if p == "" {
 		return "", "", "", fmt.Errorf("workspace %q has no path", name)
 	}
-	return path, gossipSecret, defaultScope, nil
+	return p, s, sc, nil
 }
 
 func (d *Dashboard) showInfo(msg string) {
@@ -2313,7 +2245,12 @@ func (d *Dashboard) showInfo(msg string) {
 }
 
 func staleThreshold() time.Duration {
-	return time.Duration(envInt("BOT_STALE_THRESHOLD", 120)) * time.Second
+	cfg := config.Get()
+	n := 120
+	if cfg != nil && cfg.Bot.StaleThreshold > 0 {
+		n = cfg.Bot.StaleThreshold
+	}
+	return time.Duration(n) * time.Second
 }
 
 func envInt(key string, def int) int {
@@ -2452,19 +2389,6 @@ func countQueueTickets(queueDir string, knownBots map[string]bool) int {
 		}
 	}
 	return count
-}
-
-func writeJSON(path string, v interface{}) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }
 
 func abs(x int) int {

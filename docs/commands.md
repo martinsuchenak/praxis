@@ -10,6 +10,19 @@ All commands are run via the `praxis` binary. Global flags apply to all subcomma
 --log-format    Log format: console|json (default: console)
 ```
 
+## Setup
+
+### init
+
+Initialize praxis configuration:
+
+```bash
+praxis init                    # Create global config at ~/.config/praxis/config.toml
+praxis init /path/to/project   # Create project-level praxis.toml
+```
+
+Fails if the config file already exists. Edit the generated file to set your API key and model.
+
 ## Bot Lifecycle
 
 ### spawn
@@ -24,13 +37,13 @@ Flags:
 
 | Flag | Description |
 |---|---|
-| `--model` | LLM model name (default: from `BOT_MODEL`) |
+| `--model` | LLM model name (default: from `praxis.toml` `[bot].model`) |
 | `--brain` | Initial `brain.md` content |
-| `--workspace` | Workspace name (must exist in `workspaces.json`) |
+| `--workspace` | Workspace name (must exist in `praxis.toml` `[[workspace]]`) |
 | `--scope` | Peer visibility: `open\|isolated\|family\|gateway` |
 | `--allowed-workspaces` | Comma-separated workspaces for gateway scope |
 | `--parent` | Parent bot ID (for manually wired child bots) |
-| `--no-thinking` | Disable thinking mode (respects per-model config in `models.json`) |
+| `--no-thinking` | Disable thinking mode (respects per-model `thinking_template` in `praxis.toml`) |
 | `--node` | Remote watchdog node name to spawn on (default: local) |
 | `--seeds` | Comma-separated gossip seed addresses (required with `--node`) |
 
@@ -127,7 +140,7 @@ praxis export <name>
 praxis export <name> --output /tmp/explorer.tar.gz
 ```
 
-The archive contains the bot directory, the `praxis` binary, `.env.example`, and a `bootstrap.sh` launcher.
+The archive contains the bot directory, the `praxis` binary, `praxis.example.toml`, and a `bootstrap.sh` launcher.
 
 ### import
 
@@ -151,23 +164,23 @@ Start the gossip node, bot runner pool, and crash-recovery loop (headless):
 praxis watchdog [flags]
 ```
 
-Flags:
+Flags (defaults come from `praxis.toml`, env vars override):
 
-| Flag | Env | Default | Description |
-|---|---|---|---|
-| `--port` | `BOT_WATCHDOG_PORT` | `7700` | Gossip listen port |
-| `--advertise` | `BOT_WATCHDOG_ADDR` | `0.0.0.0:<port>` | Gossip advertise address |
-| `--seeds` | `BOT_SEED_ADDRS` | — | Comma-separated seed peer addresses |
-| `--secret` | `BOT_GLOBAL_SECRET` | — | Global gossip secret |
-| `--sandbox` | `BOT_SHELL_SANDBOX` | `auto` | Sandbox mode: `auto\|bwrap\|none` |
-| `--mounts` | `BOT_SHELL_MOUNTS` | — | Extra sandbox mounts |
-| `--node-name` | `BOT_NODE_NAME` | advertise address | Human-readable node name for remote spawn targeting |
-| `--multicast-addr` | `BOT_MULTICAST_ADDR` | `239.255.13.37` | Multicast group for auto-discovery (used when no seeds) |
-| `--multicast-port` | `BOT_MULTICAST_PORT` | `19373` | Multicast port for auto-discovery |
-| `--tsnet-hostname` | `BOT_TSNET_HOSTNAME` | — | Tailscale hostname for remote swarm connectivity |
-| `--tsnet-dir` | `BOT_TSNET_DIR` | `<dir>/.tsnet` | Directory for tsnet state |
-| `--tsnet-authkey` | `BOT_TSNET_AUTHKEY` | — | Tailscale auth key for pre-authentication |
-| `--tsnet-controlurl` | `BOT_TSNET_CONTROLURL` | — | Custom coordination server URL (e.g. Headscale) |
+| Flag | Env | Description |
+|---|---|---|
+| `--port` | `BOT_WATCHDOG_PORT` | Gossip listen port |
+| `--advertise` | `BOT_WATCHDOG_ADDR` | Gossip advertise address |
+| `--seeds` | `BOT_SEED_ADDRS` | Comma-separated seed peer addresses |
+| `--secret` | `BOT_GLOBAL_SECRET` | Global gossip secret |
+| `--sandbox` | `BOT_SHELL_SANDBOX` | Sandbox mode: `auto\|bwrap\|none` |
+| `--mounts` | `BOT_SHELL_MOUNTS` | Extra sandbox mounts |
+| `--node-name` | `BOT_NODE_NAME` | Human-readable node name |
+| `--multicast-addr` | `BOT_MULTICAST_ADDR` | Multicast group for auto-discovery |
+| `--multicast-port` | `BOT_MULTICAST_PORT` | Multicast port |
+| `--tsnet-hostname` | `BOT_TSNET_HOSTNAME` | Tailscale hostname for remote swarm |
+| `--tsnet-dir` | `BOT_TSNET_DIR` | Directory for tsnet state |
+| `--tsnet-authkey` | `BOT_TSNET_AUTHKEY` | Tailscale auth key |
+| `--tsnet-controlurl` | `BOT_TSNET_CONTROLURL` | Custom coordination server URL |
 
 The watchdog joins the gossip cluster as `role=watchdog`. It:
 - Monitors bot processes and auto-restarts crashed bots
@@ -280,9 +293,9 @@ Bots get a copy of `botcore.py` at spawn time. After editing the template, use `
 ### Workspaces
 
 ```bash
-/workspace list                                                    # Show all workspaces with bots
-/workspace add <name> <path> [gossip_secret=<s>] [scope=<s>]      # Register a workspace
-/workspace remove <name>                                          # Remove (fails if bots use it)
+/workspace list                                                # Show all workspaces with bots
+/workspace add <name> <path> [secret=<s>] [scope=<s>]          # Register a workspace
+/workspace remove <name>                                        # Remove (fails if bots use it)
 ```
 
 ### Display

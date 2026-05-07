@@ -52,16 +52,18 @@ AGENT_MAX_TOKENS = int(os.environ.get("BOT_MAX_TOKENS", os.environ.get("AGENT_MA
 AGENT_COMPACTION_THRESHOLD = 70
 AGENT_REQUEST_TIMEOUT_MS = 300000
 GOSSIP_SECRET = os.environ.get("BOT_GOSSIP_SECRET", "")
-LOG_VERBOSE = os.environ.get("BOT_LOG_VERBOSE", "false").lower() == "true"
-LOG_RESULT_MAX = int(os.environ.get("BOT_LOG_RESULT_MAX", "80"))
-TICK_INTERVAL = int(os.environ.get("BOT_TICK_INTERVAL", "30"))
-STALE_THRESHOLD_SEC = int(os.environ.get("BOT_STALE_THRESHOLD", "120"))
-SCRIPT_TIMEOUT = int(os.environ.get("BOT_SCRIPT_TIMEOUT", "30"))
-MAX_BACKOFF_SEC = int(os.environ.get("BOT_MAX_BACKOFF", "600"))
-BOT_MAX_CONCURRENT = int(os.environ.get("BOT_MAX_CONCURRENT", "1"))
-TICK_MAX_ITERATIONS = int(os.environ.get("BOT_TICK_MAX_ITERATIONS", "5"))
-HTTP_ALLOWLIST = [h.strip() for h in os.environ.get("BOT_HTTP_ALLOWLIST", "").split(",") if h.strip()]
-SHELL_ALLOWLIST = [h.strip() for h in os.environ.get("BOT_SHELL_ALLOWLIST", "").split(",") if h.strip()]
+LOG_VERBOSE = CONFIG.get("log_verbose", False) if isinstance(CONFIG.get("log_verbose"), bool) else str(CONFIG.get("log_verbose", "false")).lower() == "true"
+LOG_RESULT_MAX = int(CONFIG.get("log_result_max", 80))
+TICK_INTERVAL = int(CONFIG.get("tick_interval", 30))
+STALE_THRESHOLD_SEC = int(CONFIG.get("stale_threshold", 120))
+SCRIPT_TIMEOUT = int(CONFIG.get("script_timeout", 30))
+MAX_BACKOFF_SEC = int(CONFIG.get("max_backoff", 600))
+BOT_MAX_CONCURRENT = int(CONFIG.get("max_concurrent", 1))
+TICK_MAX_ITERATIONS = int(CONFIG.get("tick_max_iterations", 5))
+_raw_http = CONFIG.get("http_allowlist", "")
+HTTP_ALLOWLIST = [h.strip() for h in _raw_http.split(",") if h.strip()] if isinstance(_raw_http, str) else list(_raw_http)
+_raw_shell = CONFIG.get("shell_allowlist", "")
+SHELL_ALLOWLIST = [h.strip() for h in _raw_shell.split(",") if h.strip()] if isinstance(_raw_shell, str) else list(_raw_shell)
 
 AVAILABLE_MODELS = CONFIG.get("models", []) or []
 
@@ -129,7 +131,7 @@ def _plan_state():
     return "done"
 
 
-_STUCK_TICK_THRESHOLD = int(os.environ.get("BOT_STUCK_TICKS", "5"))
+_STUCK_TICK_THRESHOLD = int(CONFIG.get("stuck_ticks", 5))
 
 def _check_stuck(state):
     plan_path = os.path.join(BOT_DIR, "entities", "plan.md")

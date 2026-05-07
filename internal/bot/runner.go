@@ -3,11 +3,9 @@ package bot
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -24,6 +22,8 @@ import (
 	netgossip "github.com/paularlott/scriptling/extlibs/net/gossip"
 	"github.com/paularlott/scriptling/extlibs/net/multicast"
 	"github.com/paularlott/scriptling/stdlib"
+
+	"praxis/internal/config"
 )
 
 const (
@@ -267,22 +267,6 @@ func (rp *RunnerPool) IsRunning(botID string) bool {
 	return ok && r.isRunning()
 }
 
-// loadModelsJSON reads models.json from the project root and returns its
-// contents as a slice of maps, or nil if the file is absent or malformed.
-func loadModelsJSON(projectDir string) []interface{} {
-	data, err := os.ReadFile(filepath.Join(projectDir, "models.json"))
-	if err != nil {
-		return nil
-	}
-	var models []interface{}
-	if err := json.Unmarshal(data, &models); err != nil {
-		return nil
-	}
-	return models
-}
-
-// logToFile appends a timestamped line to the bot's bot.log so it appears in
-// the TUI log panel (which polls that file) even for Go-side runner errors.
 func (r *Runner) logToFile(msg string) {
 	line := fmt.Sprintf("[%s] %s\n", time.Now().UTC().Format("2006-01-02 15:04:05"), msg)
 	f, err := os.OpenFile(r.bot.Dir+"/bot.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -333,8 +317,22 @@ func (r *Runner) run(ctx context.Context) {
 		if r.cfg.WatchdogAddr != "" {
 			configDict["seed_addrs"] = []string{r.cfg.WatchdogAddr}
 		}
-		if models := loadModelsJSON(filepath.Dir(r.mgr.BotsDir)); len(models) > 0 {
-			configDict["models"] = models
+		if appCfg := config.Get(); appCfg != nil {
+			if len(appCfg.Models.Catalog) > 0 {
+				configDict["models"] = appCfg.ModelsAsInterface()
+			}
+			configDict["base_url"] = appCfg.Bot.BaseURL
+			configDict["tick_interval"] = appCfg.Bot.TickInterval
+			configDict["tick_max_iterations"] = appCfg.Bot.TickMaxIter
+			configDict["log_verbose"] = appCfg.Bot.LogVerbose
+			configDict["log_result_max"] = appCfg.Bot.LogResultMax
+			configDict["stale_threshold"] = appCfg.Bot.StaleThreshold
+			configDict["script_timeout"] = appCfg.Bot.ScriptTimeout
+			configDict["max_backoff"] = appCfg.Bot.MaxBackoff
+			configDict["max_concurrent"] = appCfg.Bot.MaxConcurrent
+			configDict["http_allowlist"] = appCfg.Bot.HTTPAllowlist
+			configDict["shell_allowlist"] = appCfg.Bot.ShellAllowlist
+			configDict["stuck_ticks"] = appCfg.Bot.StuckTicks
 		}
 		if r.cfg.ModelsDir != "" {
 			if localModels := scanGGUFModels(r.cfg.ModelsDir); len(localModels) > 0 {

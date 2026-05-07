@@ -97,20 +97,20 @@ func TestExportContainsBootstrap(t *testing.T) {
 	}
 }
 
-func TestExportContainsEnvExample(t *testing.T) {
+func TestExportContainsPraxisTomlExample(t *testing.T) {
 	root := testutil.TempProject(t)
 	mgr := bot.NewManager(root)
-	cfg := &bot.BotConfig{Name: "envbot", Goal: "env test", Model: "test-model"}
+	cfg := &bot.BotConfig{Name: "cfgbot", Goal: "cfg test", Model: "test-model"}
 	if err := mgr.Create(cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	b, err := mgr.Get("envbot")
+	b, err := mgr.Get("cfgbot")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	outPath := filepath.Join(t.TempDir(), "envbot.tar.gz")
+	outPath := filepath.Join(t.TempDir(), "cfgbot.tar.gz")
 	if err := bot.Export(b, outPath); err != nil {
 		t.Fatal(err)
 	}
@@ -118,17 +118,17 @@ func TestExportContainsEnvExample(t *testing.T) {
 	entries := listTarGz(t, outPath)
 	found := false
 	for _, name := range entries {
-		if name == ".env.example" {
+		if name == "praxis.example.toml" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("archive missing .env.example; entries: %v", entries)
+		t.Errorf("archive missing praxis.example.toml; entries: %v", entries)
 	}
 }
 
-func TestExportContainsWorkspaceEnv(t *testing.T) {
+func TestExportContainsWorkspaceInToml(t *testing.T) {
 	root := testutil.TempProject(t)
 	mgr := bot.NewManager(root)
 	cfg := &bot.BotConfig{Name: "wsbot", Goal: "ws test", Model: "test-model", Workspace: "myapp"}
@@ -146,9 +146,9 @@ func TestExportContainsWorkspaceEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	envContent := readTarFile(t, outPath, ".env.example")
-	if !strings.Contains(envContent, "WORKSPACE_MYAPP") {
-		t.Errorf(".env.example missing WORKSPACE_MYAPP; content:\n%s", envContent)
+	tomlContent := readTarFile(t, outPath, "praxis.example.toml")
+	if !strings.Contains(tomlContent, "myapp") {
+		t.Errorf("praxis.example.toml missing workspace 'myapp'; content:\n%s", tomlContent)
 	}
 }
 

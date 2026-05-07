@@ -33,12 +33,16 @@ Single Go binary (`main.go`) + embedded Python bot template (`lib/botcore.py`).
 | `cmd/` | CLI commands. Each `*Cmd()` function returns a `*cli.Command`. Shared state via `AppContext` in context. |
 | `internal/bot/` | Bot config/state persistence (`config.go`, `state.go`), process runner via embedded scriptling (`runner.go`), bot manager (`manager.go`), export/import (`export.go`) |
 | `internal/cluster/` | Gossip cluster node. Message dispatcher routes by `type` field. Handlers: `proxy.go` (shell_req), `spawn.go` (spawn_req), `relay.go` (relay_req), `remote_spawn.go` (remote_spawn_req), `terminate.go` (terminate_req), `hardware.go` (hardware_req), `multicast.go` (auto-discovery) |
+| `internal/config/` | TOML config loading, env overrides, workspace/model resolution. `config.go` defines all structs (`Config`, `WatchdogConfig`, `BotDefaults`, `WorkspaceEntry`, `ModelEntry`). `Get()` returns the global config. `Load(projectDir)` reads `~/.config/praxis/config.toml` + `praxis.toml`, applies env overrides. |
 | `internal/sandbox/` | Shell command sandboxing (bwrap or none). Interface in `sandbox.go`. |
 | `internal/tui/` | Terminal UI dashboard (`dashboard.go`). All `/` commands are methods on `Dashboard`. |
 | `internal/testutil/` | `MockSandbox`, `TempProject()`, `TempBot()` — use these in tests. |
 | `lib/` | Python files embedded into bots at spawn. `botcore.py` is the bot runtime (tools, LLM loop, gossip). |
 
 **Key relationships**:
+- `AppContext` in `cmd/root.go` holds `*config.Config`, `*bot.Manager`, and logger. All subcommands access it via `appCtx(ctx)`.
+- Config resolution: CLI flags > env vars > `praxis.toml` > `~/.config/praxis/config.toml` > built-in defaults.
+- `cmd/watchdog_flags.go` defines shared `watchdogFlags()` and `overlayWatchdogFlags()` used by both `watchdog` and `tui` commands.
 - `cluster.Node` has `*bot.Manager` but NOT `*bot.RunnerPool`. Bot lifecycle (start/stop/kill) flows through state files — cluster handlers set status, the `monitorBotStates` goroutine (in `cmd/watchdog.go`) detects changes and calls pool methods.
 - Bots are embedded scriptling scripts. The runner (`bot.Runner`) creates a scriptling VM, registers libraries (gossip, AI, shell, llm), and runs `botcore.py` in a tick loop.
 - `lib/botcore.py` is a template — `{{VAR}}` placeholders are replaced at spawn time with bot-specific config.
@@ -63,7 +67,7 @@ When editing `botcore.py`: changes affect all newly spawned bots. Existing bots 
 
 ## Thinking Mode
 
-Each model's thinking/reasoning behavior is configured in `models.json` via the `thinking` or `thinking_template` field. The bot looks up the model's entry in `CONFIG["models"]` at runtime.
+Each model's thinking/reasoning behavior is configured in `praxis.toml` `[[models.catalog]]` via the `thinking_template` field. The bot looks up the model's entry in `CONFIG["models"]` at runtime.
 
 - `"thinking_template": "glm"` — reference a built-in provider template (qwen, ollama, ollama_compat, openai, anthropic, glm, gemini_flash, mistral)
 - `"thinking": {...}` — inline config, overrides template if both present

@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
+
+	"praxis/internal/config"
 )
 
 func TestParseCSVFlag(t *testing.T) {
@@ -33,41 +33,36 @@ func TestParseCSVFlag(t *testing.T) {
 
 func TestResolveWorkspaceMissingFile(t *testing.T) {
 	dir := t.TempDir()
+	cfg := &config.Config{}
+	config.Set(cfg)
 	p, s, sc := resolveWorkspace(dir, "myapp")
 	if p != "" || s != "" || sc != "" {
 		t.Errorf("expected empty, got path=%q secret=%q scope=%q", p, s, sc)
 	}
 }
 
-func TestResolveWorkspaceInvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte("{bad json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	p, _, _ := resolveWorkspace(dir, "myapp")
-	if p != "" {
-		t.Error("expected empty for invalid JSON")
-	}
-}
-
 func TestResolveWorkspaceNotFound(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{"other":"/path"}`), 0o644); err != nil {
-		t.Fatal(err)
+	cfg := &config.Config{
+		Workspaces: []config.WorkspaceEntry{
+			{Name: "other", Path: "/path"},
+		},
 	}
+	config.Set(cfg)
 	p, _, _ := resolveWorkspace(dir, "myapp")
 	if p != "" {
 		t.Error("expected empty for missing workspace name")
 	}
 }
 
-func TestResolveWorkspaceString(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"),
-		[]byte(`{"myapp":"/home/user/projects/myapp"}`), 0o644); err != nil {
-		t.Fatal(err)
+func TestResolveWorkspaceEntry(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: []config.WorkspaceEntry{
+			{Name: "myapp", Path: "/home/user/projects/myapp"},
+		},
 	}
-	p, s, sc := resolveWorkspace(dir, "myapp")
+	config.Set(cfg)
+	p, s, sc := resolveWorkspace("", "myapp")
 	if p != "/home/user/projects/myapp" {
 		t.Errorf("path = %q", p)
 	}
@@ -79,18 +74,14 @@ func TestResolveWorkspaceString(t *testing.T) {
 	}
 }
 
-func TestResolveWorkspaceObject(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{
-		"myapp": {
-			"path": "/home/user/projects/myapp",
-			"gossip_secret": "s3cr3t",
-			"default_scope": "isolated"
-		}
-	}`), 0o644); err != nil {
-		t.Fatal(err)
+func TestResolveWorkspaceWithSecretAndScope(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: []config.WorkspaceEntry{
+			{Name: "myapp", Path: "/home/user/projects/myapp", Secret: "s3cr3t", Scope: "isolated"},
+		},
 	}
-	p, s, sc := resolveWorkspace(dir, "myapp")
+	config.Set(cfg)
+	p, s, sc := resolveWorkspace("", "myapp")
 	if p != "/home/user/projects/myapp" {
 		t.Errorf("path = %q", p)
 	}
@@ -102,16 +93,14 @@ func TestResolveWorkspaceObject(t *testing.T) {
 	}
 }
 
-func TestResolveWorkspaceObjectPartial(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "workspaces.json"), []byte(`{
-		"minimal": {
-			"path": "/tmp/min"
-		}
-	}`), 0o644); err != nil {
-		t.Fatal(err)
+func TestResolveWorkspacePartialEntry(t *testing.T) {
+	cfg := &config.Config{
+		Workspaces: []config.WorkspaceEntry{
+			{Name: "minimal", Path: "/tmp/min"},
+		},
 	}
-	p, s, sc := resolveWorkspace(dir, "minimal")
+	config.Set(cfg)
+	p, s, sc := resolveWorkspace("", "minimal")
 	if p != "/tmp/min" {
 		t.Errorf("path = %q", p)
 	}

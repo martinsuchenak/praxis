@@ -1,96 +1,128 @@
 # Configuration
 
-All configuration is via environment variables, loaded from a `.env` file in the project directory (or exported directly).
+Configuration is via TOML files with optional environment variable overrides. Resolution order: CLI flags > env vars > `praxis.toml` > `~/.config/praxis/config.toml` > defaults.
 
-Copy `.env.example` to `.env` and fill in at minimum `BOT_API_KEY`, `BOT_BASE_URL`, and `BOT_MODEL`.
+## Quick Start
 
-## Required
+```bash
+# Initialize a project config
+praxis init /path/to/project
 
-| Variable | Description |
+# Or initialize global config
+praxis init
+```
+
+This creates a `praxis.toml` with sensible defaults. Edit it to set your API key and model.
+
+## Config File
+
+Project-level config lives at `praxis.toml` in the project directory. Global config at `~/.config/praxis/config.toml` (respects `PRAXIS_HOME` and `XDG_CONFIG_HOME`). Both are loaded and merged — project config overrides global.
+
+```toml
+[watchdog]
+port = "7700"
+sandbox = "auto"
+
+[bot]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+api_key = "sk-..."
+tick_interval = 30
+tick_max_iterations = 5
+```
+
+## Sections
+
+### `[watchdog]`
+
+| Key | Default | Env Override | Description |
+|---|---|---|---|
+| `port` | `"7700"` | `BOT_WATCHDOG_PORT` | Gossip listen port |
+| `advertise` | `0.0.0.0:<port>` | `BOT_WATCHDOG_ADDR` | Gossip advertise address |
+| `seeds` | `[]` | `BOT_SEED_ADDRS` | Gossip seed peers (comma-separated in env) |
+| `secret` | `""` | `BOT_GLOBAL_SECRET` | Global gossip auth secret |
+| `sandbox` | `"auto"` | `BOT_SHELL_SANDBOX` | Sandbox mode: `auto`, `bwrap`, `none` |
+| `mounts` | `""` | `BOT_SHELL_MOUNTS` | Extra bwrap mounts |
+| `allowlist` | `[]` | `BOT_SHELL_ALLOWLIST` | Shell command allowlist |
+| `auth_disabled` | `false` | `BOT_AUTH_DISABLED` | Disable secret validation (dev mode) |
+| `node_name` | `""` | `BOT_NODE_NAME` | Human-readable node name |
+| `multicast_addr` | `""` | `BOT_MULTICAST_ADDR` | Multicast group (default: `239.255.13.37`) |
+| `multicast_port` | `19373` | `BOT_MULTICAST_PORT` | Multicast port |
+| `models_dir` | `""` | `BOT_MODELS_DIR` | Directory with `.gguf` files for local inference |
+
+### `[tsnet]`
+
+| Key | Default | Env Override | Description |
+|---|---|---|---|
+| `hostname` | `""` | `BOT_TSNET_HOSTNAME` | Enable tsnet remote connectivity |
+| `dir` | `""` | `BOT_TSNET_DIR` | Tsnet state directory (default: `<project>/.tsnet`) |
+| `authkey` | `""` | `BOT_TSNET_AUTHKEY`, `TS_AUTHKEY` | Tailscale auth key |
+| `control_url` | `""` | `BOT_TSNET_CONTROLURL`, `TS_CONTROL_URL` | Custom coordination server |
+
+### `[bot]`
+
+| Key | Default | Env Override | Description |
+|---|---|---|---|
+| `base_url` | `""` | `BOT_BASE_URL` | LLM API base URL |
+| `model` | `""` | `BOT_MODEL` | Default model ID |
+| `api_key` | `""` | `BOT_API_KEY` | LLM API key |
+| `tick_interval` | `30` | `BOT_TICK_INTERVAL` | Seconds between ticks |
+| `tick_max_iterations` | `5` | `BOT_TICK_MAX_ITERATIONS` | Max tool-call rounds per tick |
+| `log_verbose` | `false` | `BOT_LOG_VERBOSE` | Disable log truncation |
+| `log_result_max` | `80` | `BOT_LOG_RESULT_MAX` | Max chars of tool result per log line |
+| `stale_threshold` | `120` | `BOT_STALE_THRESHOLD` | Seconds before STALE flag |
+| `script_timeout` | `30` | `BOT_SCRIPT_TIMEOUT` | Shell command timeout |
+| `max_backoff` | `600` | `BOT_MAX_BACKOFF` | Max backoff after tick errors |
+| `max_concurrent` | `1` | `BOT_MAX_CONCURRENT` | Max concurrent LLM calls |
+| `http_allowlist` | `""` | `BOT_HTTP_ALLOWLIST` | Allowed HTTP domains |
+| `shell_allowlist` | `""` | `BOT_SHELL_ALLOWLIST` | Allowed shell commands |
+| `gossip_secret` | `""` | `BOT_GOSSIP_SECRET` | Bot-level gossip secret |
+| `stuck_ticks` | `5` | `BOT_STUCK_TICKS` | Ticks before stuck detection |
+
+### `[models]`
+
+| Key | Description |
 |---|---|
-| `BOT_API_KEY` | API key for your LLM provider |
-| `BOT_BASE_URL` | OpenAI-compatible endpoint URL |
-| `BOT_MODEL` | Default model name (e.g. `qwen/qwen3-235b-a22b`) |
+| `default` | Default model ID (overrides `[bot].model` if set) |
 
-## Watchdog / Cluster
+### `[[models.catalog]]`
 
-| Variable | Default | Description |
+| Key | Required | Description |
 |---|---|---|
-| `BOT_WATCHDOG_PORT` | `7700` | Gossip listen port for the watchdog node |
-| `BOT_WATCHDOG_ADDR` | `0.0.0.0:<port>` | Gossip advertise address (override when behind NAT) |
-| `BOT_SEED_ADDRS` | — | Comma-separated seed peer addresses for cluster bootstrap |
-| `BOT_GLOBAL_SECRET` | — | Global gossip authentication secret (fallback when no workspace secret) |
-| `BOT_NODE_NAME` | advertise address | Human-readable name for this watchdog node (used for remote spawn targeting) |
-| `BOT_MULTICAST_ADDR` | `239.255.13.37` | Multicast group for auto-discovery (only used when no seeds configured) |
-| `BOT_MULTICAST_PORT` | `19373` | Multicast port for auto-discovery |
+| `id` | yes | Model name as accepted by your API endpoint |
+| `label` | yes | Human-readable name |
+| `description` | yes | What the model is good for |
+| `cost` | yes | `low`, `medium`, or `high` |
+| `strengths` | yes | Tag list for model selection |
+| `concurrency` | no | Max simultaneous LLM calls for this model |
+| `thinking_template` | no | Built-in thinking template: `qwen`, `ollama`, `openai`, `anthropic`, `glm`, `gemini_flash`, `mistral` |
+| `base_url` | no | Per-model API base URL override |
+| `api_key` | no | Per-model API key override |
 
-## Bot Runtime
+### `[[workspace]]`
 
-| Variable | Default | Description |
+| Key | Required | Description |
 |---|---|---|
-| `BOT_TICK_INTERVAL` | `30` | Seconds between ticks |
-| `BOT_SCRIPT_TIMEOUT` | `30` | Scriptling script execution timeout in seconds |
-| `BOT_TICK_MAX_ITERATIONS` | `5` | Max tool-call rounds per tick |
-| `BOT_MAX_BACKOFF` | `600` | Max backoff seconds after repeated tick errors |
-| `BOT_STALE_THRESHOLD` | `120` | Seconds before a running bot is flagged STALE |
-| `BOT_STUCK_TICKS` | `5` | Ticks without plan changes before stuck detection triggers |
-| `BOT_MAX_CONCURRENT` | `1` | Max concurrent LLM calls (global fallback; override per-model in `models.json`) |
-
-## Logging
-
-| Variable | Default | Description |
-|---|---|---|
-| `BOT_LOG_VERBOSE` | `false` | Disable log truncation (full tool results logged) |
-| `BOT_LOG_RESULT_MAX` | `80` | Max characters of tool result shown per log line |
-| `LOG_LEVEL` | `info` | Praxis log level: `trace`, `debug`, `info`, `warn`, `error` |
-| `LOG_FORMAT` | `console` | Praxis log format: `console` or `json` |
-
-## Shell Sandbox
-
-| Variable | Default | Description |
-|---|---|---|
-| `BOT_SHELL_SANDBOX` | `auto` | Sandbox mode: `auto` (use bwrap if available), `bwrap`, or `none` |
-| `BOT_SHELL_MOUNTS` | — | Extra sandbox mounts: `mode:host_path:container_path` (comma-separated). Example: `ro:/data:/data,rw:/tmp/scratch:/scratch` |
-| `BOT_SHELL_ALLOWLIST` | — | Comma-separated executables bots may run via `shell` (default: unrestricted except `curl`/`wget`) |
-| `BOT_HTTP_ALLOWLIST` | — | Comma-separated domains bots may call via `http_request` (default: unrestricted) |
+| `name` | yes | Workspace identifier |
+| `path` | yes | Absolute host path to the project directory |
+| `secret` | no | Workspace-specific gossip secret (overrides global) |
+| `scope` | no | Default communication scope: `open`, `isolated`, `family`, `gateway` |
+| `allow_cross` | no | Allow cross-workspace access (default: `false`) |
 
 ## Local Models (GGUF)
 
-| Variable | Default | Description |
-|---|---|---|
-| `BOT_MODELS_DIR` | `<project_dir>/models` | Directory containing `.gguf` model files. If set and the directory exists, local inference via `local_generate` is available to all bots. |
-
-### Downloading Models
-
-Use the bundled Taskfile to download SmolLM2 instruct models (Q8_0 quantization):
+Set `models_dir` in `[watchdog]` to a directory containing `.gguf` files. If empty, defaults to `<project_dir>/models`. Download bundled models:
 
 ```bash
 task models:download
 ```
 
-This downloads three sizes to `models/`:
-
-| Model | File | Size |
-|---|---|---|
-| SmolLM2 135M | `SmolLM2-135M-Instruct-Q8_0.gguf` | ~145 MB |
-| SmolLM2 360M | `SmolLM2-360M-Instruct-Q8_0.gguf` | ~386 MB |
-| SmolLM2 1.7B | `SmolLM2-1.7B-Instruct-Q8_0.gguf` | ~1.8 GB |
-| Qwen3 1.7B | `Qwen_Qwen3-1.7B-Q8_0.gguf` | ~2.2 GB |
-| Llama 3.2 1B | `Llama-3.2-1B-Instruct-Q8_0.gguf` | ~1.3 GB |
-
-To clean up: `task models:clean`
-
-These are small instruct models suitable for text classification, formatting, short answers, and triage — not complex reasoning or code generation.
-
-## Praxis
-
-| Variable | Default | Description |
-|---|---|---|
-| `PRAXIS_DIR` | `.` | Praxis project directory (equivalent to `--dir`) |
-
 ## Notes
 
-- API keys are never written into bot source files. Bots read `BOT_API_KEY` and `BOT_BASE_URL` from the environment at runtime.
+- **Secrets handling**: `api_key`, `base_url`, and `gossip_secret` are set as process environment variables from the TOML config. The bot reads them via `os.environ.get()` at runtime — they are never injected into the bot's CONFIG dict. This prevents accidental logging or exfiltration through the bot's self-inspection tools. `base_url` is included because the bot needs it for API calls but it's not sensitive.
+- **Bot-accessible config**: Non-sensitive runtime settings (`tick_interval`, `max_concurrent`, `log_verbose`, etc.) are injected into the bot's CONFIG dict and readable by the bot script.
 - `BOT_IP` is set automatically by the watchdog when launching bots — bots cannot detect their own IP.
-- Per-workspace `gossip_secret` in `workspaces.json` overrides `BOT_GLOBAL_SECRET` for bots in that workspace.
-- **Auto-discovery**: When `BOT_SEED_ADDRS` is not configured, watchdogs use UDP multicast (`239.255.13.37:19373`) to discover each other on the local network. Bots also use this same multicast channel. To disable auto-discovery, provide explicit seeds or set `BOT_MULTICAST_ADDR=""`.
+- Per-workspace `secret` in `[[workspace]]` overrides the global `[bot].gossip_secret` for bots in that workspace. The workspace secret is injected into the bot's CONFIG as `gossip_secret` at spawn time (the bot needs it to sign gossip messages).
+- **Auto-discovery**: When no seeds are configured, watchdogs use UDP multicast (`239.255.13.37:19373`) to discover each other. To disable, provide explicit seeds or set `multicast_addr = ""`.
+- **Resolution order**: CLI flags > env vars > `praxis.toml` > `~/.config/praxis/config.toml` > built-in defaults. All env vars from the table above can be used alongside or instead of TOML keys.
+- **`praxis init`**: Creates a `praxis.toml` with defaults. With a path argument creates a project config, without creates the global config.

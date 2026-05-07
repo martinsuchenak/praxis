@@ -7,11 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
-// Export writes a portable tar.gz archive of the bot to outPath.
 func Export(b *Bot, outPath string) error {
 	f, err := os.Create(outPath)
 	if err != nil {
@@ -33,9 +31,9 @@ func Export(b *Bot, outPath string) error {
 		}
 	}
 
-	envExample := buildEnvExample(b.Config)
-	if err := addBytesToTar(tw, []byte(envExample), ".env.example", 0o644); err != nil {
-		return fmt.Errorf("add env example: %w", err)
+	tomlExample := buildPraxisTomlExample(b.Config)
+	if err := addBytesToTar(tw, []byte(tomlExample), "praxis.example.toml", 0o644); err != nil {
+		return fmt.Errorf("add config example: %w", err)
 	}
 
 	bootstrap := buildBootstrap(b.Config.Name)
@@ -49,31 +47,33 @@ func Export(b *Bot, outPath string) error {
 	return gw.Close()
 }
 
-func buildEnvExample(cfg *BotConfig) string {
-	var sb strings.Builder
-	sb.WriteString("# praxis environment variables\n")
-	sb.WriteString("# Copy to .env and fill in values\n\n")
-	sb.WriteString("BOT_WATCHDOG_PORT=7700\n")
-	sb.WriteString("BOT_WATCHDOG_ADDR=\n")
-	sb.WriteString("BOT_GLOBAL_SECRET=\n")
-	sb.WriteString("BOT_SHELL_SANDBOX=auto\n")
+func buildPraxisTomlExample(cfg *BotConfig) string {
+	out := `# Praxis Configuration
+# Copy to praxis.toml and fill in values
+
+[watchdog]
+port = "7700"
+sandbox = "auto"
+
+[bot]
+base_url = ""
+model = ""
+api_key = ""
+tick_interval = 30
+tick_max_iterations = 5
+`
 	if cfg.Workspace != "" {
-		fmt.Fprintf(&sb, "\n# Workspace: %s\n", cfg.Workspace)
-		fmt.Fprintf(&sb, "# Set WORKSPACE_%s to the local path for workspace %q\n",
-			strings.ToUpper(cfg.Workspace), cfg.Workspace)
-		fmt.Fprintf(&sb, "WORKSPACE_%s=\n", strings.ToUpper(cfg.Workspace))
+		out += fmt.Sprintf("\n[[workspace]]\nname = %q\npath = \"\"\n", cfg.Workspace)
 	}
-	return sb.String()
+	return out
 }
 
 func buildBootstrap(botName string) string {
 	return fmt.Sprintf(`#!/bin/sh
 # Bootstrap script for bot %q
-# Run this after importing the archive to start the watchdog.
 set -e
-if [ -f .env ]; then
-  export $(grep -v '^#' .env | xargs)
-fi
+cp praxis.example.toml praxis.toml
+echo "Edit praxis.toml with your API key and settings"
 ./praxis watchdog &
 echo "watchdog started"
 ./praxis start %s

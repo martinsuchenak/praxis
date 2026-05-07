@@ -26,7 +26,7 @@ func spawnCmd() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "model", Usage: "LLM model name", EnvVars: []string{"BOT_MODEL"}},
 			&cli.StringFlag{Name: "brain", Usage: "Initial brain.md content"},
-			&cli.StringFlag{Name: "workspace", Usage: "Workspace name (must exist in workspaces.json)"},
+			&cli.StringFlag{Name: "workspace", Usage: "Workspace name (must exist in praxis.toml)"},
 			&cli.StringFlag{Name: "scope", Usage: "Peer visibility: open|isolated|family|gateway"},
 			&cli.StringFlag{Name: "allowed-workspaces", Usage: "Comma-separated workspaces for gateway scope"},
 			&cli.StringFlag{Name: "parent", Usage: "Parent bot ID (for child bots)"},

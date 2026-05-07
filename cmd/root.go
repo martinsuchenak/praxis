@@ -6,20 +6,20 @@ import (
 	"path/filepath"
 
 	"github.com/paularlott/cli"
-	clienv "github.com/paularlott/cli/env"
 	"github.com/paularlott/logger"
 	logslog "github.com/paularlott/logger/slog"
 
 	"praxis/internal/bot"
+	"praxis/internal/config"
 )
 
 type contextKey string
 
 const appKey contextKey = "app"
 
-// AppContext holds shared state passed to all subcommands via context.
 type AppContext struct {
 	Dir     string
+	Cfg     *config.Config
 	Logger  logger.Logger
 	Manager *bot.Manager
 }
@@ -28,14 +28,10 @@ func appCtx(ctx context.Context) *AppContext {
 	return ctx.Value(appKey).(*AppContext)
 }
 
-// botcoreTemplate is set by main via SetBotcoreTemplate before Root() is called.
 var botcoreTemplate []byte
 
-// SetBotcoreTemplate provides the embedded botcore.py bytes to the cmd package.
-// Must be called before Root().Execute().
 func SetBotcoreTemplate(b []byte) { botcoreTemplate = b }
 
-// Root builds and returns the root CLI command.
 func Root() *cli.Command {
 	var dir string
 
@@ -66,14 +62,14 @@ func Root() *cli.Command {
 			},
 		},
 		PreRun: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
-			// Load .env from the project directory
 			abs, err := filepath.Abs(dir)
 			if err != nil {
 				abs = dir
 			}
-			envFile := filepath.Join(abs, ".env")
-			if _, err := os.Stat(envFile); err == nil {
-				_ = clienv.Load(envFile)
+
+			cfg, err := config.Load(abs)
+			if err != nil {
+				return nil, err
 			}
 
 			log := logslog.New(logslog.Config{
@@ -86,12 +82,14 @@ func Root() *cli.Command {
 			mgr.TemplateBytes = botcoreTemplate
 			app := &AppContext{
 				Dir:     abs,
+				Cfg:     cfg,
 				Logger:  log,
 				Manager: mgr,
 			}
 			return context.WithValue(ctx, appKey, app), nil
 		},
 		Commands: []*cli.Command{
+			initCmd(),
 			spawnCmd(),
 			listCmd(),
 			startCmd(),

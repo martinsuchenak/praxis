@@ -10,6 +10,115 @@ import (
 	"praxis/internal/testutil"
 )
 
+func TestUpdateConfig(t *testing.T) {
+	m, root := newTestManager(t)
+	testutil.TempBot(t, root, "upbot", &bot.BotConfig{
+		Model:    "old-model",
+		Thinking: false,
+		Goal:     "old goal",
+		Scope:    bot.ScopeIsolated,
+	})
+
+	err := m.UpdateConfig("upbot", map[string]string{
+		"model":    "new-model",
+		"thinking": "true",
+		"goal":     "new goal",
+		"scope":    bot.ScopeGateway,
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+
+	loaded, err := bot.LoadConfig(m.BotDir("upbot"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.Model != "new-model" {
+		t.Errorf("Model: got %q, want %q", loaded.Model, "new-model")
+	}
+	if !loaded.Thinking {
+		t.Errorf("Thinking: got false, want true")
+	}
+	if loaded.Goal != "new goal" {
+		t.Errorf("Goal: got %q, want %q", loaded.Goal, "new goal")
+	}
+	if loaded.Scope != bot.ScopeGateway {
+		t.Errorf("Scope: got %q, want %q", loaded.Scope, bot.ScopeGateway)
+	}
+}
+
+func TestUpdateConfigBotNotFound(t *testing.T) {
+	m, _ := newTestManager(t)
+	err := m.UpdateConfig("ghost", map[string]string{"model": "x"})
+	if err == nil {
+		t.Error("expected error for nonexistent bot")
+	}
+}
+
+func TestRefreshTemplate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.TemplateBytes = []byte("original")
+
+	cfg := &bot.BotConfig{Name: "refbot", Goal: "g", Model: "m"}
+	if err := m.Create(cfg); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	m.TemplateBytes = []byte("updated template")
+	if err := m.RefreshTemplate("refbot"); err != nil {
+		t.Fatalf("RefreshTemplate: %v", err)
+	}
+
+	got, err := os.ReadFile(m.BotScript("refbot"))
+	if err != nil {
+		t.Fatalf("read bot.py: %v", err)
+	}
+	if string(got) != "updated template" {
+		t.Errorf("bot.py: got %q, want %q", got, "updated template")
+	}
+}
+
+func TestRefreshTemplateInvalidName(t *testing.T) {
+	m, _ := newTestManager(t)
+	err := m.RefreshTemplate("bad name!")
+	if err == nil {
+		t.Error("expected error for invalid name")
+	}
+}
+
+func TestRemoveLocks(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	lockDir := filepath.Join(m.LocksDir, "mymodel")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockFile := filepath.Join(lockDir, "_mybot.wait")
+	if err := os.WriteFile(lockFile, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	otherFile := filepath.Join(lockDir, "_otherbot.wait")
+	if err := os.WriteFile(otherFile, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m.RemoveLocks("mybot")
+
+	if _, err := os.Stat(lockFile); !os.IsNotExist(err) {
+		t.Error("lock file for mybot should be removed")
+	}
+	if _, err := os.Stat(otherFile); err != nil {
+		t.Error("lock file for otherbot should still exist")
+	}
+}
+
+func TestRemoveLocksNoDir(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.LocksDir = filepath.Join(t.TempDir(), "nonexistent")
+	m.RemoveLocks("anybot")
+}
+
 func newTestManager(t *testing.T) (*bot.Manager, string) {
 	t.Helper()
 	root := testutil.TempProject(t)

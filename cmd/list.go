@@ -9,6 +9,7 @@ import (
 	"github.com/paularlott/cli"
 
 	"praxis/internal/bot"
+	"praxis/internal/config"
 )
 
 func listCmd() *cli.Command {
@@ -68,5 +69,10 @@ func displayStatus(b *bot.Bot, threshold time.Duration) string {
 }
 
 func staleThreshold() time.Duration {
-	return time.Duration(envInt("BOT_STALE_THRESHOLD", 120)) * time.Second
+	cfg := config.Get()
+	n := 120
+	if cfg != nil && cfg.Bot.StaleThreshold > 0 {
+		n = cfg.Bot.StaleThreshold
+	}
+	return time.Duration(n) * time.Second
 }

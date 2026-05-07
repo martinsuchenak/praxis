@@ -10,6 +10,7 @@ praxis/
   internal/
     bot/                Bot manager: spawn, start, stop, state, runner pool
     cluster/            Gossip node, message dispatcher, shell/spawn/relay handlers
+    config/             TOML config loading, env overrides, workspace resolution
     sandbox/            bwrap sandbox wrapper
     tui/                Terminal UI dashboard
   bots/                 One directory per bot (runtime-created, git-ignored)
@@ -17,9 +18,8 @@ praxis/
   main.go
   embed.go              Embeds lib/botcore.py into the binary
   go.mod
-  workspaces.json       Workspace definitions (git-ignored)
-  models.json           Model catalog (git-ignored)
-  .env                  Environment config (git-ignored)
+  praxis.toml           Project configuration (git-ignored)
+  praxis.example.toml   Documented example config
 ```
 
 ### Bot Directory
@@ -57,7 +57,7 @@ The workspace directory is an explicit exception: added to `--allowed-paths` and
 
 ### No credentials in source
 
-API keys and base URLs are never written into `bot.py`. Bots read `BOT_API_KEY` and `BOT_BASE_URL` from the environment at runtime. `BOT_IP` is set by the watchdog process launcher — bots cannot detect their own IP.
+Secrets (`api_key`, `gossip_secret`) are never injected into the bot's CONFIG dict. They are set as process environment variables from `praxis.toml` and read by the bot via `os.environ.get()`. The bot needs `api_key` to make LLM calls and `gossip_secret` to sign messages, but keeping them in env vars rather than the CONFIG dict prevents accidental logging through self-inspection tools. `BOT_IP` is set by the watchdog process launcher — bots cannot detect their own IP.
 
 ### Path traversal guard
 

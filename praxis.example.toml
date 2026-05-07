@@ -1,0 +1,60 @@
+# Praxis Configuration
+# Copy to praxis.toml and edit. Config resolution: env vars > praxis.toml > defaults.
+
+[watchdog]
+port = "7700"                    # Gossip listen port
+# advertise = ""                 # Override advertise address (default: 0.0.0.0:<port>)
+# seeds = ["192.168.1.10:7700"]  # Gossip seed peers
+# secret = ""                    # Global gossip auth secret
+sandbox = "auto"                 # auto|bwrap|none
+# mounts = ""                    # Extra bwrap mounts
+# allowlist = []                 # Shell command allowlist (empty = all)
+# auth_disabled = false          # Disable secret validation (dev mode)
+# node_name = ""                 # Human-readable node name
+# multicast_addr = ""            # Multicast group (default: 239.255.13.37)
+# multicast_port = 19373         # Multicast port
+# models_dir = ""                # Directory with .gguf files for local inference
+
+[tsnet]
+# hostname = ""                  # Enable tsnet remote connectivity
+# dir = ""                       # Tsnet state directory (default: <project>/.tsnet)
+# authkey = ""                   # Tailscale auth key
+# control_url = ""               # Custom coordination server (e.g. Headscale)
+
+[bot]
+base_url = ""                    # LLM API base URL
+model = ""                       # Default model ID
+api_key = ""                     # LLM API key
+tick_interval = 30               # Seconds between bot ticks
+tick_max_iterations = 5          # Max iterations per tick
+# log_verbose = false
+# log_result_max = 80
+# stale_threshold = 120
+# script_timeout = 30
+# max_backoff = 600
+# max_concurrent = 1
+# http_allowlist = ""
+# shell_allowlist = ""
+# gossip_secret = ""
+# stuck_ticks = 5
+
+[models]
+default = ""                     # Default model ID (overrides [bot].model if set)
+
+# [[models.catalog]]
+# id = "model-id"
+# label = "Display Name"
+# description = "When to use this model"
+# cost = "low"
+# strengths = ["fast", "tool calling"]
+# concurrency = 2
+# thinking_template = "qwen"     # qwen|ollama|openai|anthropic|glm|gemini_flash|mistral
+# base_url = ""                  # Per-model API base URL override
+# api_key = ""                   # Per-model API key override
+
+# [[workspace]]
+# name = "my-project"
+# path = "/home/user/projects/my-project"
+# secret = ""                    # Workspace-specific gossip secret
+# scope = "isolated"             # open|isolated|family|gateway
+# allow_cross = false

@@ -214,6 +214,49 @@ func TestAsDict(t *testing.T) {
 	}
 }
 
+func TestValidateChildScopeEdgeCases(t *testing.T) {
+	err := ValidateChildScope("", ScopeGateway)
+	if err != nil {
+		t.Errorf("empty parent with gateway child: %v", err)
+	}
+	err = ValidateChildScope("", ScopeIsolated)
+	if err != nil {
+		t.Errorf("empty parent with isolated child: %v", err)
+	}
+	err = ValidateChildScope(ScopeFamily, ScopeIsolated)
+	if err == nil {
+		t.Error("family parent with isolated child should error")
+	}
+	err = ValidateChildScope(ScopeFamily, ScopeGateway)
+	if err == nil {
+		t.Error("family parent with gateway child should error")
+	}
+	err = ValidateChildScope("bogus", ScopeOpen)
+	if err == nil {
+		t.Error("unknown parent scope should error")
+	}
+}
+
+func TestCopyFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	dst := filepath.Join(dir, "dst.txt")
+	content := []byte("hello copy file test\nline two\n")
+	if err := os.WriteFile(src, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(src, dst); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Errorf("content mismatch: got %q, want %q", got, content)
+	}
+}
+
 func TestRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	original := &BotConfig{
