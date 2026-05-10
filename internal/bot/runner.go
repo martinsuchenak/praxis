@@ -19,6 +19,7 @@ import (
 	"github.com/paularlott/scriptling/extlibs/agent"
 	extai "github.com/paularlott/scriptling/extlibs/ai"
 	"github.com/paularlott/scriptling/extlibs/ai/memory"
+	extmcp "github.com/paularlott/scriptling/extlibs/mcp"
 	netgossip "github.com/paularlott/scriptling/extlibs/net/gossip"
 	"github.com/paularlott/scriptling/extlibs/net/multicast"
 	"github.com/paularlott/scriptling/stdlib"
@@ -110,6 +111,7 @@ func registerLibraries(p *scriptling.Scriptling, log logger.Logger) {
 	extai.Register(p)
 	memory.Register(p, log)
 	_ = agent.Register(p)
+	extmcp.Register(p)
 	p.RegisterLibrary(scriptlingllmlib.Library)
 }
 
@@ -352,6 +354,9 @@ func (r *Runner) run(ctx context.Context) {
 			configDict["stuck_ticks"] = appCfg.Bot.StuckTicks
 			if botHooks := appCfg.BotHooksAsDict(); len(botHooks) > 0 {
 				configDict["hooks"] = botHooks
+			}
+			if mcpServers := appCfg.MCPServersAsDict(); len(mcpServers) > 0 {
+				configDict["mcp_servers"] = mcpServers
 			}
 		}
 		if r.cfg.ModelsDir != "" {

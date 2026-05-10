@@ -4,7 +4,158 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
+
+func TestMCPServersAsDict(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerEntry{
+			{Name: "github", URL: "http://localhost:8080/mcp", Namespace: "gh", BearerToken: "tok123"},
+			{Name: "fs", URL: "http://localhost:8081/mcp"},
+		},
+	}
+
+	dict := cfg.MCPServersAsDict()
+	if len(dict) != 2 {
+		t.Fatalf("expected 2 servers, got %d", len(dict))
+	}
+
+	gh := dict[0].(map[string]interface{})
+	if gh["name"] != "github" {
+		t.Errorf("name = %v, want github", gh["name"])
+	}
+	if gh["url"] != "http://localhost:8080/mcp" {
+		t.Errorf("url = %v", gh["url"])
+	}
+	if gh["namespace"] != "gh" {
+		t.Errorf("namespace = %v, want gh", gh["namespace"])
+	}
+	if gh["bearer_token"] != "tok123" {
+		t.Errorf("bearer_token = %v, want tok123", gh["bearer_token"])
+	}
+
+	fs := dict[1].(map[string]interface{})
+	if _, ok := fs["namespace"]; ok {
+		t.Error("namespace should not be set when empty")
+	}
+	if _, ok := fs["bearer_token"]; ok {
+		t.Error("bearer_token should not be set when empty")
+	}
+}
+
+func TestMCPServersAsDictEmpty(t *testing.T) {
+	cfg := &Config{}
+	dict := cfg.MCPServersAsDict()
+	if dict != nil {
+		t.Fatalf("expected nil for empty servers, got %v", dict)
+	}
+}
+
+func TestLoadConfigWithMCPAndHooks(t *testing.T) {
+	dir := t.TempDir()
+	tomlContent := `
+[watchdog]
+port = "9999"
+
+[bot]
+model = "test-model"
+
+[[mcp]]
+name = "github"
+url = "http://localhost:8080/mcp"
+namespace = "gh"
+
+[[mcp]]
+name = "fs"
+url = "http://localhost:8081/mcp"
+bearer_token = "secret"
+
+[hooks]
+pre_spawn = [{ type = "command", command = "echo ok" }]
+post_tick = [{ type = "http", url = "http://localhost:9999/tick" }]
+`
+	tomlPath := filepath.Join(dir, "praxis.toml")
+	if err := os.WriteFile(tomlPath, []byte(tomlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &Config{}
+	setDefaults(cfg)
+	if _, err := toml.DecodeFile(tomlPath, cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(cfg.MCPServers) != 2 {
+		t.Fatalf("expected 2 MCP servers, got %d", len(cfg.MCPServers))
+	}
+	if cfg.MCPServers[0].Name != "github" {
+		t.Errorf("server[0].name = %q", cfg.MCPServers[0].Name)
+	}
+	if cfg.MCPServers[0].URL != "http://localhost:8080/mcp" {
+		t.Errorf("server[0].url = %q", cfg.MCPServers[0].URL)
+	}
+	if cfg.MCPServers[0].Namespace != "gh" {
+		t.Errorf("server[0].namespace = %q", cfg.MCPServers[0].Namespace)
+	}
+	if cfg.MCPServers[1].BearerToken != "secret" {
+		t.Errorf("server[1].bearer_token = %q", cfg.MCPServers[1].BearerToken)
+	}
+
+	if len(cfg.Hooks.PreSpawn) != 1 {
+		t.Fatalf("expected 1 pre_spawn hook, got %d", len(cfg.Hooks.PreSpawn))
+	}
+	if cfg.Hooks.PreSpawn[0].Command != "echo ok" {
+		t.Errorf("pre_spawn command = %q", cfg.Hooks.PreSpawn[0].Command)
+	}
+	if len(cfg.Hooks.PostTick) != 1 {
+		t.Fatalf("expected 1 post_tick hook, got %d", len(cfg.Hooks.PostTick))
+	}
+	if cfg.Hooks.PostTick[0].URL != "http://localhost:9999/tick" {
+		t.Errorf("post_tick url = %q", cfg.Hooks.PostTick[0].URL)
+	}
+
+	mcpDict := cfg.MCPServersAsDict()
+	if len(mcpDict) != 2 {
+		t.Fatalf("MCPServersAsDict returned %d entries", len(mcpDict))
+	}
+}
+
+func TestHooksForAllEvents(t *testing.T) {
+	cfg := &Config{
+		Hooks: HooksConfig{
+			PreSpawn:    []HookHandler{{Type: "command", Command: "a"}},
+			PostSpawn:   []HookHandler{{Type: "command", Command: "b"}},
+			PreStart:    []HookHandler{{Type: "command", Command: "c"}},
+			PostStart:   []HookHandler{{Type: "command", Command: "d"}},
+			PreStop:     []HookHandler{{Type: "command", Command: "e"}},
+			PostStop:    []HookHandler{{Type: "command", Command: "f"}},
+			PreKill:     []HookHandler{{Type: "command", Command: "g"}},
+			PostKill:    []HookHandler{{Type: "command", Command: "h"}},
+			PostCrash:   []HookHandler{{Type: "command", Command: "i"}},
+			PreTick:     []HookHandler{{Type: "command", Command: "j"}},
+			PostTick:    []HookHandler{{Type: "command", Command: "k"}},
+			PreToolUse:  []HookHandler{{Type: "command", Command: "l"}},
+			PostToolUse: []HookHandler{{Type: "command", Command: "m"}},
+			OnMessage:   []HookHandler{{Type: "command", Command: "n"}},
+			OnStuck:     []HookHandler{{Type: "command", Command: "o"}},
+		},
+	}
+
+	events := []string{
+		"pre_spawn", "post_spawn", "pre_start", "post_start",
+		"pre_stop", "post_stop", "pre_kill", "post_kill", "post_crash",
+		"pre_tick", "post_tick", "pre_tool_use", "post_tool_use",
+		"on_message", "on_stuck",
+	}
+
+	for _, event := range events {
+		handlers := cfg.HooksForEvent(event)
+		if len(handlers) != 1 {
+			t.Errorf("HooksForEvent(%q) returned %d handlers, want 1", event, len(handlers))
+		}
+	}
+}
 
 func TestDefaults(t *testing.T) {
 	cfg := &Config{}

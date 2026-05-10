@@ -263,6 +263,105 @@ func TestHooksForEvent(t *testing.T) {
 	}
 }
 
+func TestFireCommandHookReceivesJSON(t *testing.T) {
+	cfg := &config.Config{
+		Hooks: config.HooksConfig{
+			PreToolUse: []config.HookHandler{
+				{
+					Type:    "command",
+					Command: "bash -c 'jq -e \".bot_id == \\\"my-bot\\\" and .hook_event_name == \\\"pre_tool_use\\\" and .payload.tool_name == \\\"shell\\\"\" > /dev/null'",
+					Timeout: 5,
+				},
+			},
+		},
+	}
+	config.Set(cfg)
+
+	res, err := Fire("pre_tool_use", "my-bot", map[string]interface{}{
+		"tool_name":  "shell",
+		"tool_input": map[string]interface{}{"command": "ls"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if res != nil {
+		t.Fatalf("expected nil result for pass-through, got %v", res)
+	}
+}
+
+func TestFireHTTPHookReceivesPayload(t *testing.T) {
+	var received Event
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dec := json.NewDecoder(r.Body)
+		_ = dec.Decode(&received)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Hooks: config.HooksConfig{
+			PostCrash: []config.HookHandler{
+				{
+					Type:    "http",
+					URL:     srv.URL,
+					Timeout: 5,
+				},
+			},
+		},
+	}
+	config.Set(cfg)
+
+	_, _ = Fire("post_crash", "crashed-bot", map[string]interface{}{
+		"error": "oom",
+		"crash": 3,
+	})
+
+	if received.Name != "post_crash" {
+		t.Errorf("hook_event_name = %q, want post_crash", received.Name)
+	}
+	if received.BotID != "crashed-bot" {
+		t.Errorf("bot_id = %q, want crashed-bot", received.BotID)
+	}
+	if received.Payload["error"] != "oom" {
+		t.Errorf("payload.error = %v", received.Payload["error"])
+	}
+	if received.Payload["crash"] != float64(3) {
+		t.Errorf("payload.crash = %v, want 3", received.Payload["crash"])
+	}
+}
+
+func TestFireHTTPHookBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"block": true, "reason": "rate limited"}`))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		Hooks: config.HooksConfig{
+			PreTick: []config.HookHandler{
+				{
+					Type:    "http",
+					URL:     srv.URL,
+					Timeout: 5,
+				},
+			},
+		},
+	}
+	config.Set(cfg)
+
+	res, err := Fire("pre_tick", "test-bot", nil)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if res == nil || !res.Block {
+		t.Fatal("expected blocked result")
+	}
+	if res.Reason != "rate limited" {
+		t.Fatalf("expected reason 'rate limited', got %q", res.Reason)
+	}
+}
+
 func TestBotHooksAsDict(t *testing.T) {
 	cfg := &config.Config{
 		Hooks: config.HooksConfig{

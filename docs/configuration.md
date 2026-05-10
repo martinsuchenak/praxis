@@ -109,6 +109,34 @@ tick_max_iterations = 5
 | `scope` | no | Default communication scope: `open`, `isolated`, `family`, `gateway` |
 | `allow_cross` | no | Allow cross-workspace access (default: `false`) |
 
+### `[[mcp]]`
+
+MCP (Model Context Protocol) servers expose external tools to all bots. Tools are discovered at startup and bridged into each bot's tool registry. Standard configuration format compatible with Claude Code, Cursor, and other AI agents.
+
+| Key | Required | Description |
+|---|---|---|
+| `name` | yes | Human-readable server identifier |
+| `url` | yes | MCP server URL (streamable HTTP or SSE endpoint) |
+| `namespace` | no | Tool name prefix. Defaults to `name`. Tools appear as `<namespace>__<tool_name>` |
+| `bearer_token` | no | Bearer token for Authorization header |
+
+Example:
+
+```toml
+[[mcp]]
+name = "github"
+url = "http://localhost:8080/mcp"
+namespace = "gh"
+
+[[mcp]]
+name = "filesystem"
+url = "http://localhost:8081/mcp"
+namespace = "fs"
+bearer_token = "secret-token"
+```
+
+Bots will see tools like `gh__search_code`, `gh__create_issue`, `fs__read_file`, etc. These tools go through the same hook system as built-in tools (`pre_tool_use` / `post_tool_use` hooks fire on MCP tool calls too).
+
 ## Local Models (GGUF)
 
 Set `models_dir` in `[watchdog]` to a directory containing `.gguf` files. If empty, defaults to `<project_dir>/models`. Download bundled models:

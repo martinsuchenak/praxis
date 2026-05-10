@@ -202,3 +202,26 @@ Handlers receive JSON with: `hook_event_name`, `bot_id`, `payload` (event-specif
 - Bot-side hooks in `botcore.py` — `_run_hook()`, `_run_hook_command()`, `_run_hook_http()`
 - Watchdog hooks fire in `runner.go` (start/stop/kill/crash), `spawn.go`, `cmd/spawn.go`, `dashboard.go`
 - Bot hooks are injected via `CONFIG["hooks"]` and run inside the scriptling VM
+
+## MCP (Model Context Protocol)
+
+Bots can use tools from MCP servers configured in `praxis.toml` under `[[mcp]]`. Tools are discovered at startup and bridged into the bot's `ToolRegistry` as regular tools (with namespace prefix).
+
+### Configuration
+
+```toml
+[[mcp]]
+name = "github"
+url = "http://localhost:8080/mcp"
+namespace = "gh"
+bearer_token = ""
+```
+
+### Architecture
+
+- `internal/config/config.go` — `MCPServerEntry` struct, `MCPServersAsDict()` method
+- `internal/bot/runner.go` — registers `extmcp` library, injects `CONFIG["mcp_servers"]`
+- `lib/botcore.py` — `_mcp_clients` list, bridge code before agent creation: creates `mcp.Client`, enumerates tools via `client.tools()`, registers each as `tools.add(name, desc, params, _wrap_tool(name, handler))`
+- Tool names are prefixed with namespace: `<namespace>__<tool_name>` (e.g. `gh__search_code`)
+- MCP tools go through the same `_wrap_tool` wrapper, so hooks (`pre_tool_use`, `post_tool_use`) fire on them
+- If a server is unreachable at startup, the error is logged but the bot still starts without those tools

@@ -12,6 +12,7 @@ import scriptling.net.gossip as gossip
 import scriptling.net.multicast as mc
 import scriptling.grep as greplib
 import scriptling.sed as sedlib
+import scriptling.mcp as mcp
 import llm
 import os
 import os.path
@@ -2000,6 +2001,48 @@ _thinking_cfg = _get_thinking_config(model_name)
 _agent_extra_body = None
 if _thinking_cfg and _thinking_cfg.get("mode") == "json_body":
     _agent_extra_body = _thinking_cfg.get("body_on", {}) if thinking_enabled else _thinking_cfg.get("body_off", {})
+
+_mcp_clients = []
+_mcp_server_cfgs = CONFIG.get("mcp_servers", []) or []
+for _mcp_cfg in _mcp_server_cfgs:
+    try:
+        _mc = mcp.Client(
+            _mcp_cfg["url"],
+            namespace=_mcp_cfg.get("namespace", _mcp_cfg.get("name", "")),
+            bearer_token=_mcp_cfg.get("bearer_token", ""),
+        )
+        _mcp_tools = _mc.tools()
+        _mcp_clients.append(_mc)
+        for _mt in _mcp_tools:
+            _tname = _mt.get("name", "")
+            _tdesc = _mt.get("description", "")
+            _tschema = _mt.get("input_schema", {})
+            if not _tname:
+                continue
+            _tparams = {}
+            if isinstance(_tschema, dict):
+                _props = _tschema.get("properties", {})
+                _required = set(_tschema.get("required", []))
+                for _pk, _pv in _props.items():
+                    _pt = _pv.get("type", "string")
+                    if _pk not in _required:
+                        _pt += "?"
+                    _tparams[_pk] = _pt
+            if not _tparams:
+                _tparams = {"_args": "string?"}
+            _mc_ref = _mc
+            _tn = _tname
+            def _make_mcp_handler(mc, tn):
+                def _handler(args):
+                    try:
+                        return mc.call_tool(tn, args)
+                    except Exception as e:
+                        return "Error: MCP tool " + tn + " failed: " + str(e)
+                return _handler
+            tools.add(_tname, _tdesc, _tparams, _wrap_tool(_tname, _make_mcp_handler(_mc_ref, _tn)))
+        _log("INFO", "MCP server " + _mcp_cfg.get("name", _mcp_cfg["url"]) + " connected: " + str(len(_mcp_tools)) + " tools")
+    except Exception as e:
+        _log("ERR", "MCP server " + _mcp_cfg.get("name", _mcp_cfg["url"]) + " failed: " + str(e))
 
 bot_agent = agent.Agent(
     client,

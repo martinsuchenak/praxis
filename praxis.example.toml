@@ -93,3 +93,19 @@ default = ""                     # Default model ID (overrides [bot].model if se
 #   { type = "http", url = "http://localhost:8080/hooks/message", async = true }
 # ]
 # on_stuck = []
+
+# MCP servers expose external tools to bots via the Model Context Protocol.
+# Tools from each server are bridged into the bot's tool registry at startup.
+# Tool names are prefixed: <namespace>__<tool_name> (e.g. github__search_code).
+# Standard config format compatible with Claude Code, Cursor, and other AI agents.
+
+# [[mcp]]
+# name = "github"                                 # Human-readable identifier
+# url = "http://localhost:8080/mcp"               # MCP server URL (streamable HTTP or SSE)
+# namespace = "github"                            # Tool name prefix (default: name)
+# bearer_token = ""                               # Optional auth token
+
+# [[mcp]]
+# name = "filesystem"
+# url = "http://localhost:8081/mcp"
+# namespace = "fs"

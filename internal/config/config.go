@@ -18,6 +18,7 @@ type Config struct {
 	Workspaces []WorkspaceEntry `toml:"workspace"`
 	Models     ModelsConfig     `toml:"models"`
 	Hooks      HooksConfig      `toml:"hooks"`
+	MCPServers []MCPServerEntry `toml:"mcp"`
 }
 
 type WatchdogConfig struct {
@@ -110,6 +111,13 @@ type HookHandler struct {
 	Headers map[string]string `toml:"headers"`
 	Timeout int               `toml:"timeout"`
 	Async   bool              `toml:"async"`
+}
+
+type MCPServerEntry struct {
+	Name        string `toml:"name"`
+	URL         string `toml:"url"`
+	Namespace   string `toml:"namespace"`
+	BearerToken string `toml:"bearer_token"`
 }
 
 var (
@@ -481,5 +489,23 @@ func (c *Config) BotHooksAsDict() []interface{} {
 	addEvents("post_tool_use", c.Hooks.PostToolUse)
 	addEvents("on_message", c.Hooks.OnMessage)
 	addEvents("on_stuck", c.Hooks.OnStuck)
+	return out
+}
+
+func (c *Config) MCPServersAsDict() []interface{} {
+	var out []interface{}
+	for _, s := range c.MCPServers {
+		m := map[string]interface{}{
+			"name": s.Name,
+			"url":  s.URL,
+		}
+		if s.Namespace != "" {
+			m["namespace"] = s.Namespace
+		}
+		if s.BearerToken != "" {
+			m["bearer_token"] = s.BearerToken
+		}
+		out = append(out, m)
+	}
 	return out
 }
