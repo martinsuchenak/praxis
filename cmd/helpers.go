@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 
 	"praxis/internal/config"
@@ -36,25 +35,6 @@ func parseCSVFlag(val string) []string {
 		}
 	}
 	return out
-}
-
-func resolveModelsDir(raw, projectDir string) string {
-	cfg := config.Get()
-	if cfg != nil {
-		return cfg.ModelsDirResolved(projectDir)
-	}
-	p := raw
-	if p == "" {
-		p = filepath.Join(projectDir, "models")
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return p
-	}
-	if _, err := os.Stat(abs); err != nil {
-		return ""
-	}
-	return abs
 }
 
 func resolveWorkspace(projectDir, name string) (path, gossipSecret, defaultScope string) {

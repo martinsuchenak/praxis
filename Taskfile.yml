@@ -139,9 +139,7 @@ tasks:
         MODELS=(
           "SmolLM2-135M-Instruct-Q8_0.gguf:bartowski/SmolLM2-135M-Instruct-GGUF"
           "SmolLM2-360M-Instruct-Q8_0.gguf:bartowski/SmolLM2-360M-Instruct-GGUF"
-          "SmolLM2-1.7B-Instruct-Q8_0.gguf:bartowski/SmolLM2-1.7B-Instruct-GGUF"
-          "Qwen_Qwen3-1.7B-Q8_0.gguf:bartowski/Qwen_Qwen3-1.7B-GGUF"
-          "Llama-3.2-1B-Instruct-Q8_0.gguf:bartowski/Llama-3.2-1B-Instruct-GGUF"
+          "SmolLM2-1.7B-Instruct-Q8_0.gguf:bartowski/SmolLM2-1.7B-Instruct-GGUF"          
         )
         for entry in "${MODELS[@]}"; do
           FILENAME="${entry%%:*}"

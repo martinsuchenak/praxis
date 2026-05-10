@@ -2253,17 +2253,7 @@ func staleThreshold() time.Duration {
 	return time.Duration(n) * time.Second
 }
 
-func envInt(key string, def int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
-}
+
 
 func readLastN(path string, n int) (string, error) {
 	f, err := os.Open(path)

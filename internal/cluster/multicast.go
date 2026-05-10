@@ -50,7 +50,7 @@ func (d *discoverer) run(ctx context.Context, joinFunc func(addrs []string) erro
 		d.log.Warn("multicast: listen failed, auto-discovery disabled", "err", err)
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	pconn := ipv4.NewPacketConn(conn)
 
@@ -64,7 +64,7 @@ func (d *discoverer) run(ctx context.Context, joinFunc func(addrs []string) erro
 		d.log.Warn("multicast: join group failed", "err", err)
 		return
 	}
-	defer pconn.LeaveGroup(intf, groupAddr)
+	defer func() { _ = pconn.LeaveGroup(intf, groupAddr) }()
 
 	if err := pconn.SetControlMessage(ipv4.FlagDst, true); err != nil {
 		d.log.Debug("multicast: control message setup failed", "err", err)

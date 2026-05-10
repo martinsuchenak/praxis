@@ -226,13 +226,13 @@ func applyEnvOverrides(cfg *Config) {
 
 func applySecretsToEnv(cfg *Config) {
 	if cfg.Bot.APIKey != "" {
-		os.Setenv("BOT_API_KEY", cfg.Bot.APIKey)
+		_ = os.Setenv("BOT_API_KEY", cfg.Bot.APIKey)
 	}
 	if cfg.Bot.BaseURL != "" {
-		os.Setenv("BOT_BASE_URL", cfg.Bot.BaseURL)
+		_ = os.Setenv("BOT_BASE_URL", cfg.Bot.BaseURL)
 	}
 	if cfg.Bot.GossipSecret != "" {
-		os.Setenv("BOT_GOSSIP_SECRET", cfg.Bot.GossipSecret)
+		_ = os.Setenv("BOT_GOSSIP_SECRET", cfg.Bot.GossipSecret)
 	}
 }
 
@@ -283,7 +283,7 @@ func (c *Config) Save(projectDir string) error {
 		return err
 	}
 	if err := toml.NewEncoder(f).Encode(c); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -363,7 +363,7 @@ func InitDir(target string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create config: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
 		return "", fmt.Errorf("write config: %w", err)

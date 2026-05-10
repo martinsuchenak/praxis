@@ -415,9 +415,9 @@ func TestApplySecretsToEnv(t *testing.T) {
 }
 
 func TestApplySecretsToEnvEmpty(t *testing.T) {
-	os.Unsetenv("BOT_API_KEY")
-	os.Unsetenv("BOT_BASE_URL")
-	os.Unsetenv("BOT_GOSSIP_SECRET")
+	_ = os.Unsetenv("BOT_API_KEY")
+	_ = os.Unsetenv("BOT_BASE_URL")
+	_ = os.Unsetenv("BOT_GOSSIP_SECRET")
 
 	cfg := &Config{}
 	applySecretsToEnv(cfg)
@@ -433,13 +433,13 @@ func TestGlobalDir(t *testing.T) {
 		t.Errorf("PRAXIS_HOME = %q, want /custom/home", got)
 	}
 
-	os.Unsetenv("PRAXIS_HOME")
+	_ = os.Unsetenv("PRAXIS_HOME")
 	t.Setenv("XDG_CONFIG_HOME", "/xdg")
 	if got := GlobalDir(); got != "/xdg/praxis" {
 		t.Errorf("XDG = %q, want /xdg/praxis", got)
 	}
 
-	os.Unsetenv("XDG_CONFIG_HOME")
+	_ = os.Unsetenv("XDG_CONFIG_HOME")
 	home, _ := os.UserHomeDir()
 	expected := filepath.Join(home, ".config", "praxis")
 	if got := GlobalDir(); got != expected {

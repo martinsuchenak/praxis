@@ -136,8 +136,8 @@ func TestConfigFromEnvMulticast(t *testing.T) {
 }
 
 func TestConfigFromEnvMulticastDefaults(t *testing.T) {
-	os.Unsetenv("BOT_MULTICAST_ADDR")
-	os.Unsetenv("BOT_MULTICAST_PORT")
+	_ = os.Unsetenv("BOT_MULTICAST_ADDR")
+	_ = os.Unsetenv("BOT_MULTICAST_PORT")
 	t.Setenv("BOT_WATCHDOG_PORT", "7700")
 	t.Setenv("BOT_WATCHDOG_ADDR", "")
 

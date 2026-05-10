@@ -89,7 +89,7 @@ func envInt(key string, def int) int {
 		return def
 	}
 	n := def
-	fmt.Sscanf(v, "%d", &n)
+	_, _ = fmt.Sscanf(v, "%d", &n)
 	return n
 }
 
