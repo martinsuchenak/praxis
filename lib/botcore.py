@@ -65,6 +65,78 @@ HTTP_ALLOWLIST = [h.strip() for h in _raw_http.split(",") if h.strip()] if isins
 _raw_shell = CONFIG.get("shell_allowlist", "")
 SHELL_ALLOWLIST = [h.strip() for h in _raw_shell.split(",") if h.strip()] if isinstance(_raw_shell, str) else list(_raw_shell)
 
+_BOT_HOOKS = CONFIG.get("hooks", []) or []
+
+
+def _run_hook(event, payload=None):
+    if not _BOT_HOOKS:
+        return None
+    matched = [h for h in _BOT_HOOKS if h.get("event") == event]
+    if not matched:
+        return None
+    hook_input = {
+        "hook_event_name": event,
+        "bot_id": BOT_ID,
+        "payload": payload or {},
+    }
+    last_result = None
+    for h in matched:
+        htype = h.get("type", "command")
+        timeout = h.get("timeout", 30)
+        if h.get("async"):
+            try:
+                if htype == "command":
+                    runtime.background().run(h["command"], json.dumps(hook_input), timeout=timeout)
+                elif htype == "http":
+                    requests.post(h["url"], json=hook_input, timeout=timeout)
+            except Exception:
+                pass
+            continue
+        try:
+            if htype == "command":
+                result = _run_hook_command(h["command"], hook_input, timeout)
+            elif htype == "http":
+                result = _run_hook_http(h["url"], hook_input, timeout)
+            else:
+                continue
+            if result and result.get("block"):
+                return result
+            last_result = result
+        except Exception as e:
+            _log("ERR", "hook " + event + " error: " + str(e))
+    return last_result
+
+
+def _run_hook_command(command, hook_input, timeout):
+    proc = runtime.background().run(command, json.dumps(hook_input), timeout=timeout)
+    if proc is None:
+        return None
+    rc = proc.get("exit_code", 0)
+    if rc == 2:
+        return {"block": True, "reason": (proc.get("stderr") or "").strip()}
+    if rc != 0:
+        return None
+    out = (proc.get("stdout") or "").strip()
+    if not out:
+        return None
+    try:
+        return json.loads(out)
+    except Exception:
+        return {"context": out}
+
+
+def _run_hook_http(url, hook_input, timeout):
+    resp = requests.post(url, json=hook_input, timeout=timeout)
+    if resp.status_code < 200 or resp.status_code >= 300:
+        return None
+    body = resp.text.strip()
+    if not body:
+        return None
+    try:
+        return json.loads(body)
+    except Exception:
+        return {"context": body}
+
 AVAILABLE_MODELS = CONFIG.get("models", []) or []
 
 LOCAL_MODELS = CONFIG.get("local_models", []) or []
@@ -186,6 +258,12 @@ def _wrap_tool(name, fn):
             s = str(v).replace("\n", " ")
             parts.append(k + "=" + _trunc(s, 120))
         _log("TOOL", " ".join(parts))
+
+        hook_res = _run_hook("pre_tool_use", {"tool_name": name, "tool_input": args})
+        if hook_res and hook_res.get("block"):
+            _log("ERR", "tool " + name + " blocked by hook: " + hook_res.get("reason", ""))
+            return "Error: tool blocked by hook - " + hook_res.get("reason", "no reason given")
+
         result = fn(args)
         summary = str(result).replace("\n", " ")
         _err_prefixes = ["Error", "Invalid", "File not found", "Bot not found",
@@ -202,6 +280,8 @@ def _wrap_tool(name, fn):
             except Exception:
                 pass
         _log("ERR" if _is_err else "OK", _trunc(summary, LOG_RESULT_MAX))
+
+        _run_hook("post_tool_use", {"tool_name": name, "tool_input": args, "is_error": _is_err})
         return result
     return wrapper
 
@@ -643,6 +723,7 @@ def _on_gossip_msg(msg):
             "ts": int(time.time()),
         })
         _log("INFO", "<- message  from=" + sender_id + "  content=" + _trunc(content, 100))
+        _run_hook("on_message", {"from": sender_id, "content": content, "type": "message"})
         _gossip_send(msg.get("sender", {}).get("id", ""), {
             "type": "ack",
             "from": BOT_ID,
@@ -2013,6 +2094,7 @@ while True:
         stuck = _check_stuck(state)
         if stuck:
             tick_msg += "WARNING: Your plan has not changed in " + str(_STUCK_TICK_THRESHOLD) + " ticks. You appear stuck. Try a different approach: break the task into smaller steps, use a different tool, ask a peer for help, or revise the plan entirely.\n\n"
+            _run_hook("on_stuck", {"tick": _tick_count, "plan_state": plan})
         if unread_msgs:
             tick_msg += "You have " + str(len(unread_msgs)) + " message" + ("" if len(unread_msgs) == 1 else "s") + ". Handle them FIRST — they may require updating your plan or immediate action.\n\n"
             for m in unread_msgs:
@@ -2039,18 +2121,28 @@ while True:
         _lock_model()
         _log("INFO", "calling LLM " + model_name + "...")
         _flush_log()
-        try:
-            sys_prompt = _build_system_prompt()
-            bot_agent.system_prompt = sys_prompt
-            trigger_msg, _ = _apply_thinking(model_name, tick_msg, thinking_enabled)
-            if LOG_VERBOSE:
-                debug_dir = os.path.join(BOT_DIR, "debug")
-                if not os.path.exists(debug_dir):
-                    os.makedirs(debug_dir)
-                os.write_file(os.path.join(debug_dir, "tick-" + str(_tick_count) + ".md"), "# System Prompt\n\n" + sys_prompt + "\n\n# Tick Message\n\n" + trigger_msg + "\n")
-            bot_agent.trigger(trigger_msg, max_iterations=TICK_MAX_ITERATIONS)
-        finally:
+
+        hook_res = _run_hook("pre_tick", {"tick": _tick_count, "plan": _plan_state(), "messages": len(unread_msgs)})
+        if hook_res and hook_res.get("block"):
+            _log("INFO", "tick " + str(_tick_count) + " blocked by hook: " + hook_res.get("reason", ""))
             _unlock_model()
+        else:
+            if hook_res and hook_res.get("context"):
+                tick_msg += "\n## Hook Context\n" + hook_res["context"] + "\n"
+            try:
+                sys_prompt = _build_system_prompt()
+                bot_agent.system_prompt = sys_prompt
+                trigger_msg, _ = _apply_thinking(model_name, tick_msg, thinking_enabled)
+                if LOG_VERBOSE:
+                    debug_dir = os.path.join(BOT_DIR, "debug")
+                    if not os.path.exists(debug_dir):
+                        os.makedirs(debug_dir)
+                    os.write_file(os.path.join(debug_dir, "tick-" + str(_tick_count) + ".md"), "# System Prompt\n\n" + sys_prompt + "\n\n# Tick Message\n\n" + trigger_msg + "\n")
+                bot_agent.trigger(trigger_msg, max_iterations=TICK_MAX_ITERATIONS)
+            finally:
+                _unlock_model()
+
+        _run_hook("post_tick", {"tick": _tick_count, "plan": _plan_state()})
 
         _bump_fitness("ticks_alive")
         _atomic_write_json(STATUS_PATH, _build_status())

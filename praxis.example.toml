@@ -58,3 +58,38 @@ default = ""                     # Default model ID (overrides [bot].model if se
 # secret = ""                    # Workspace-specific gossip secret
 # scope = "isolated"             # open|isolated|family|gateway
 # allow_cross = false
+
+# [hooks]
+# Lifecycle hooks run shell commands or HTTP endpoints at bot lifecycle points.
+# Each event accepts an array of handler objects.
+# Handler fields: type (required: "command" or "http"), command or url, timeout, async.
+# Blocking events (pre_spawn, pre_tick, pre_tool_use) can prevent the action.
+# Exit 0 = success (parse stdout as JSON), Exit 2 = block (stderr = reason).
+
+# pre_spawn = [
+#   { type = "command", command = "/path/to/validate.sh", timeout = 30 }
+# ]
+# post_spawn = [
+#   { type = "command", command = "/path/to/log.sh" }
+# ]
+# pre_start = []
+# post_start = []
+# pre_stop = []
+# post_stop = [
+#   { type = "http", url = "http://localhost:8080/hooks/stop", timeout = 10 }
+# ]
+# pre_kill = []
+# post_kill = []
+# post_crash = [
+#   { type = "command", command = "/path/to/alert.sh", async = true }
+# ]
+# pre_tick = []
+# post_tick = []
+# pre_tool_use = [
+#   { type = "command", command = "/path/to/check-tool.sh", timeout = 15 }
+# ]
+# post_tool_use = []
+# on_message = [
+#   { type = "http", url = "http://localhost:8080/hooks/message", async = true }
+# ]
+# on_stuck = []

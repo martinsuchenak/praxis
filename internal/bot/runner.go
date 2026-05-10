@@ -24,6 +24,7 @@ import (
 	"github.com/paularlott/scriptling/stdlib"
 
 	"praxis/internal/config"
+	"praxis/internal/hooks"
 )
 
 const (
@@ -187,6 +188,10 @@ func (rp *RunnerPool) Start(botID string) error {
 
 	_ = rp.mgr.SetStatus(botID, StatusStarting)
 
+	_, _ = hooks.Fire("pre_start", botID, map[string]interface{}{
+		"bot_id": botID,
+	})
+
 	go r.run(ctx)
 	return nil
 }
@@ -199,10 +204,16 @@ func (rp *RunnerPool) Stop(botID string) error {
 	if !ok || !r.isRunning() {
 		return fmt.Errorf("bot %q is not running", botID)
 	}
+	_, _ = hooks.Fire("pre_stop", botID, map[string]interface{}{
+		"bot_id": botID,
+	})
 	_ = rp.mgr.SetStatus(botID, StatusStopping)
 	r.cancel()
 	<-r.done
 	rp.mgr.RemoveLocks(botID)
+	_, _ = hooks.Fire("post_stop", botID, map[string]interface{}{
+		"bot_id": botID,
+	})
 	return nil
 }
 
@@ -214,10 +225,16 @@ func (rp *RunnerPool) Kill(botID string) error {
 	if !ok || !r.isRunning() {
 		return fmt.Errorf("bot %q is not running", botID)
 	}
+	_, _ = hooks.Fire("pre_kill", botID, map[string]interface{}{
+		"bot_id": botID,
+	})
 	_ = rp.mgr.SetStatus(botID, StatusKilled)
 	r.cancel()
 	<-r.done
 	rp.mgr.RemoveLocks(botID)
+	_, _ = hooks.Fire("post_kill", botID, map[string]interface{}{
+		"bot_id": botID,
+	})
 	return nil
 }
 
@@ -333,6 +350,9 @@ func (r *Runner) run(ctx context.Context) {
 			configDict["http_allowlist"] = appCfg.Bot.HTTPAllowlist
 			configDict["shell_allowlist"] = appCfg.Bot.ShellAllowlist
 			configDict["stuck_ticks"] = appCfg.Bot.StuckTicks
+			if botHooks := appCfg.BotHooksAsDict(); len(botHooks) > 0 {
+				configDict["hooks"] = botHooks
+			}
 		}
 		if r.cfg.ModelsDir != "" {
 			if localModels := scanGGUFModels(r.cfg.ModelsDir); len(localModels) > 0 {
@@ -353,6 +373,10 @@ func (r *Runner) run(ctx context.Context) {
 			return
 		}
 		_ = SaveState(r.bot.Dir, &BotState{Status: StatusRunning})
+
+		_, _ = hooks.Fire("post_start", r.bot.Config.Name, map[string]interface{}{
+			"bot_id": r.bot.Config.Name,
+		})
 
 		// Register per-goroutine factory so sandbox/background calls from
 		// this bot's script use this bot's allowed paths.
@@ -383,6 +407,12 @@ func (r *Runner) run(ctx context.Context) {
 
 			_ = SaveState(r.bot.Dir, &BotState{Status: StatusStopped})
 
+			_, _ = hooks.Fire("post_crash", r.bot.Config.Name, map[string]interface{}{
+				"bot_id": r.bot.Config.Name,
+				"error":  evalErr.Error(),
+				"crash":  crashes,
+			})
+
 			backoff := nextBackoff(crashes)
 			r.log.Info("restarting after backoff", "delay", backoff)
 			r.logToFile(fmt.Sprintf("restarting in %s (crash #%d)", backoff, crashes))
@@ -394,6 +424,9 @@ func (r *Runner) run(ctx context.Context) {
 		} else {
 			// Clean exit (script returned normally) — don't restart.
 			_ = SaveState(r.bot.Dir, &BotState{Status: StatusStopped})
+			_, _ = hooks.Fire("post_stop", r.bot.Config.Name, map[string]interface{}{
+				"bot_id": r.bot.Config.Name,
+			})
 			return
 		}
 	}

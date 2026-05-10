@@ -35,6 +35,7 @@ Single Go binary (`main.go`) + embedded Python bot template (`lib/botcore.py`).
 | `internal/cluster/` | Gossip cluster node. Message dispatcher routes by `type` field. Handlers: `proxy.go` (shell_req), `spawn.go` (spawn_req), `relay.go` (relay_req), `remote_spawn.go` (remote_spawn_req), `terminate.go` (terminate_req), `hardware.go` (hardware_req), `multicast.go` (auto-discovery) |
 | `internal/config/` | TOML config loading, env overrides, workspace/model resolution. `config.go` defines all structs (`Config`, `WatchdogConfig`, `BotDefaults`, `WorkspaceEntry`, `ModelEntry`). `Get()` returns the global config. `Load(projectDir)` reads `~/.config/praxis/config.toml` + `praxis.toml`, applies env overrides. |
 | `internal/sandbox/` | Shell command sandboxing (bwrap or none). Interface in `sandbox.go`. |
+| `internal/hooks/` | Lifecycle hook dispatcher. `Fire()` runs configured command/HTTP hooks for an event. |
 | `internal/tui/` | Terminal UI dashboard (`dashboard.go`). All `/` commands are methods on `Dashboard`. |
 | `internal/testutil/` | `MockSandbox`, `TempProject()`, `TempBot()` — use these in tests. |
 | `lib/` | Python files embedded into bots at spawn. `botcore.py` is the bot runtime (tools, LLM loop, gossip). |
@@ -130,3 +131,74 @@ Optional remote swarm connectivity via `tailscale.com/tsnet`. Enabled when `--ts
 - `gossip.Config.DialFunc` / `gossip.Config.ListenFunc` (v0.12.5+) inject tsnet's `Dial`/`Listen`
 - Local bots connect via LAN as usual — no tsnet dependency on the bot side
 - All isolation (secrets, scope, auth) works identically over both transports
+
+## Lifecycle Hooks
+
+User-defined shell commands or HTTP endpoints that execute at specific bot lifecycle points. Configured in `praxis.toml` under `[hooks]`.
+
+### Hook Events
+
+**Watchdog-side (Go):**
+
+| Event | When | Can block |
+|---|---|---|
+| `pre_spawn` | Before a bot is created | Yes |
+| `post_spawn` | After a bot is created | No |
+| `pre_start` | Before a bot runner starts | No |
+| `post_start` | After a bot enters running state | No |
+| `pre_stop` | Before graceful stop | No |
+| `post_stop` | After bot stops cleanly | No |
+| `pre_kill` | Before forced kill | No |
+| `post_kill` | After bot is killed | No |
+| `post_crash` | After bot crashes (includes error/crash count) | No |
+
+**Bot-side (botcore.py):**
+
+| Event | When | Can block |
+|---|---|---|
+| `pre_tick` | Before LLM call in tick loop | Yes |
+| `post_tick` | After successful tick | No |
+| `pre_tool_use` | Before a tool executes | Yes |
+| `post_tool_use` | After a tool executes | No |
+| `on_message` | When a gossip message arrives | No |
+| `on_stuck` | When stuck detection triggers | No |
+
+### Configuration
+
+Hooks are defined in `praxis.toml` as arrays of handler objects:
+
+```toml
+[hooks]
+pre_spawn = [
+  { type = "command", command = "/path/to/validate.sh", timeout = 30 }
+]
+post_tick = [
+  { type = "http", url = "http://localhost:8080/hooks/tick", timeout = 10 }
+]
+pre_tool_use = [
+  { type = "command", command = "/path/to/check.sh", timeout = 15 }
+]
+on_message = [
+  { type = "http", url = "http://localhost:8080/hooks/message", async = true }
+]
+```
+
+Each handler has: `type` (required: "command" or "http"), `command` or `url`, `timeout` (seconds), `async` (boolean).
+
+### Hook Input
+
+Handlers receive JSON with: `hook_event_name`, `bot_id`, `payload` (event-specific). Command hooks receive it on stdin. HTTP hooks receive it as POST body.
+
+### Hook Output
+
+- Exit 0: success. If stdout is valid JSON `{"block": true, "reason": "..."}`, the action is blocked.
+- Exit 2: blocking error. stderr text is used as the block reason.
+- Other exit codes: non-blocking error, execution continues.
+
+### Architecture
+
+- `internal/hooks/hooks.go` — `Fire()` dispatches to command or HTTP runners, `runCommand()` / `runHTTP()`
+- `internal/config/config.go` — `HooksConfig`, `HookHandler` structs, `HooksForEvent()`, `BotHooksAsDict()`
+- Bot-side hooks in `botcore.py` — `_run_hook()`, `_run_hook_command()`, `_run_hook_http()`
+- Watchdog hooks fire in `runner.go` (start/stop/kill/crash), `spawn.go`, `cmd/spawn.go`, `dashboard.go`
+- Bot hooks are injected via `CONFIG["hooks"]` and run inside the scriptling VM

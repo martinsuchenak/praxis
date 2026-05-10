@@ -13,6 +13,7 @@ import (
 
 	"praxis/internal/bot"
 	"praxis/internal/cluster"
+	"praxis/internal/hooks"
 )
 
 func spawnCmd() *cli.Command {
@@ -80,9 +81,26 @@ func spawnCmd() *cli.Command {
 				return spawnRemoteCLI(ctx, nodeName, cfg, cmd.GetString("seeds"))
 			}
 
+			hookRes, hookErr := hooks.Fire("pre_spawn", name, map[string]interface{}{
+				"bot_id": name,
+				"goal":   goal,
+				"model":  model,
+				"scope":  cfg.Scope,
+			})
+			if hookErr != nil {
+				return fmt.Errorf("hook blocked spawn: %w", hookErr)
+			}
+			if hookRes != nil && hookRes.Block {
+				return fmt.Errorf("spawn blocked by hook: %s", hookRes.Reason)
+			}
+
 			if err := app.Manager.Create(cfg); err != nil {
 				return err
 			}
+
+			_, _ = hooks.Fire("post_spawn", name, map[string]interface{}{
+				"bot_id": name,
+			})
 
 			fmt.Printf("spawned %s\n", name)
 			fmt.Printf("  dir:   %s\n", app.Manager.BotDir(name))

@@ -17,6 +17,7 @@ type Config struct {
 	Bot        BotDefaults      `toml:"bot"`
 	Workspaces []WorkspaceEntry `toml:"workspace"`
 	Models     ModelsConfig     `toml:"models"`
+	Hooks      HooksConfig      `toml:"hooks"`
 }
 
 type WatchdogConfig struct {
@@ -82,6 +83,33 @@ type ModelEntry struct {
 	ThinkingTemplate string                 `toml:"thinking_template"`
 	BaseURL          string                 `toml:"base_url"`
 	APIKey           string                 `toml:"api_key"`
+}
+
+type HooksConfig struct {
+	PreSpawn   []HookHandler `toml:"pre_spawn"`
+	PostSpawn  []HookHandler `toml:"post_spawn"`
+	PreStart   []HookHandler `toml:"pre_start"`
+	PostStart  []HookHandler `toml:"post_start"`
+	PreStop    []HookHandler `toml:"pre_stop"`
+	PostStop   []HookHandler `toml:"post_stop"`
+	PreKill    []HookHandler `toml:"pre_kill"`
+	PostKill   []HookHandler `toml:"post_kill"`
+	PostCrash  []HookHandler `toml:"post_crash"`
+	PreTick    []HookHandler `toml:"pre_tick"`
+	PostTick   []HookHandler `toml:"post_tick"`
+	PreToolUse []HookHandler `toml:"pre_tool_use"`
+	PostToolUse []HookHandler `toml:"post_tool_use"`
+	OnMessage  []HookHandler `toml:"on_message"`
+	OnStuck    []HookHandler `toml:"on_stuck"`
+}
+
+type HookHandler struct {
+	Type    string            `toml:"type"`
+	Command string            `toml:"command"`
+	URL     string            `toml:"url"`
+	Headers map[string]string `toml:"headers"`
+	Timeout int               `toml:"timeout"`
+	Async   bool              `toml:"async"`
 }
 
 var (
@@ -385,4 +413,73 @@ func (c *Config) ModelsDirResolved(projectDir string) string {
 		return ""
 	}
 	return abs
+}
+
+func (c *Config) HooksForEvent(event string) []HookHandler {
+	switch event {
+	case "pre_spawn":
+		return c.Hooks.PreSpawn
+	case "post_spawn":
+		return c.Hooks.PostSpawn
+	case "pre_start":
+		return c.Hooks.PreStart
+	case "post_start":
+		return c.Hooks.PostStart
+	case "pre_stop":
+		return c.Hooks.PreStop
+	case "post_stop":
+		return c.Hooks.PostStop
+	case "pre_kill":
+		return c.Hooks.PreKill
+	case "post_kill":
+		return c.Hooks.PostKill
+	case "post_crash":
+		return c.Hooks.PostCrash
+	case "pre_tick":
+		return c.Hooks.PreTick
+	case "post_tick":
+		return c.Hooks.PostTick
+	case "pre_tool_use":
+		return c.Hooks.PreToolUse
+	case "post_tool_use":
+		return c.Hooks.PostToolUse
+	case "on_message":
+		return c.Hooks.OnMessage
+	case "on_stuck":
+		return c.Hooks.OnStuck
+	default:
+		return nil
+	}
+}
+
+func (c *Config) BotHooksAsDict() []interface{} {
+	var out []interface{}
+	addEvents := func(event string, handlers []HookHandler) {
+		for _, h := range handlers {
+			m := map[string]interface{}{
+				"event": event,
+				"type":  h.Type,
+			}
+			if h.Command != "" {
+				m["command"] = h.Command
+			}
+			if h.URL != "" {
+				m["url"] = h.URL
+			}
+			if h.Timeout > 0 {
+				m["timeout"] = h.Timeout
+			}
+			if h.Async {
+				m["async"] = true
+			}
+			out = append(out, m)
+		}
+	}
+	addEvents("pre_tick", c.Hooks.PreTick)
+	addEvents("post_tick", c.Hooks.PostTick)
+	addEvents("pre_tool_use", c.Hooks.PreToolUse)
+	addEvents("post_tool_use", c.Hooks.PostToolUse)
+	addEvents("on_message", c.Hooks.OnMessage)
+	addEvents("on_stuck", c.Hooks.OnStuck)
+	return out
 }

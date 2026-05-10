@@ -20,6 +20,7 @@ import (
 	"praxis/internal/bot"
 	"praxis/internal/cluster"
 	"praxis/internal/config"
+	"praxis/internal/hooks"
 	"praxis/internal/sandbox"
 )
 
@@ -1263,6 +1264,9 @@ func (d *Dashboard) cmdSpawn(args string) {
 		d.showInfo(fmt.Sprintf("spawn error: %v", err))
 		return
 	}
+	_, _ = hooks.Fire("post_spawn", name, map[string]interface{}{
+		"bot_id": name,
+	})
 	if err := d.pool.Start(name); err != nil && !d.pool.IsRunning(name) {
 		d.showInfo(fmt.Sprintf("spawned %s but start failed: %v", name, err))
 		return

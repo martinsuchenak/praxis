@@ -126,3 +126,144 @@ task models:download
 - **Auto-discovery**: When no seeds are configured, watchdogs use UDP multicast (`239.255.13.37:19373`) to discover each other. To disable, provide explicit seeds or set `multicast_addr = ""`.
 - **Resolution order**: CLI flags > env vars > `praxis.toml` > `~/.config/praxis/config.toml` > built-in defaults. All env vars from the table above can be used alongside or instead of TOML keys.
 - **`praxis init`**: Creates a `praxis.toml` with defaults. With a path argument creates a project config, without creates the global config.
+
+## Lifecycle Hooks
+
+Hooks are user-defined shell commands or HTTP endpoints that execute automatically at specific bot lifecycle points. Configure them in `praxis.toml` under `[hooks]`.
+
+### Events
+
+**Watchdog-side (Go):**
+
+| Event | When | Can block |
+|---|---|---|
+| `pre_spawn` | Before a bot is created | Yes |
+| `post_spawn` | After a bot is created | No |
+| `pre_start` | Before a bot runner starts | No |
+| `post_start` | After a bot enters running state | No |
+| `pre_stop` | Before graceful stop | No |
+| `post_stop` | After bot stops cleanly | No |
+| `pre_kill` | Before forced kill | No |
+| `post_kill` | After bot is killed | No |
+| `post_crash` | After bot crashes (includes `error` and `crash` count in payload) | No |
+
+**Bot-side (botcore.py):**
+
+| Event | When | Can block |
+|---|---|---|
+| `pre_tick` | Before LLM call in tick loop | Yes |
+| `post_tick` | After successful tick | No |
+| `pre_tool_use` | Before a tool executes | Yes |
+| `post_tool_use` | After a tool executes | No |
+| `on_message` | When a gossip message arrives | No |
+| `on_stuck` | When stuck detection triggers | No |
+
+### Handler Configuration
+
+Each event accepts an array of handler objects:
+
+```toml
+[hooks]
+pre_spawn = [
+  { type = "command", command = "/path/to/validate.sh", timeout = 30 }
+]
+post_tick = [
+  { type = "http", url = "http://localhost:8080/hooks/tick", timeout = 10 }
+]
+pre_tool_use = [
+  { type = "command", command = "/path/to/check.sh", timeout = 15 }
+]
+on_message = [
+  { type = "http", url = "http://localhost:8080/hooks/message", async = true }
+]
+post_crash = [
+  { type = "command", command = "/path/to/alert.sh", async = true }
+]
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `type` | yes | `"command"` or `"http"` |
+| `command` | yes (command) | Shell command to execute |
+| `url` | yes (http) | URL to send POST request to |
+| `timeout` | no | Seconds before canceling (default: 30) |
+| `async` | no | Run in background without blocking (default: false) |
+
+### Hook Input
+
+Handlers receive JSON with event context. Command hooks get it on **stdin**, HTTP hooks as **POST body**:
+
+```json
+{
+  "hook_event_name": "pre_tool_use",
+  "bot_id": "my-bot",
+  "payload": {
+    "tool_name": "shell",
+    "tool_input": { "command": "rm -rf /tmp" }
+  }
+}
+```
+
+Common payload fields by event:
+
+| Event | Payload fields |
+|---|---|
+| `pre_spawn` / `post_spawn` | `bot_id`, `goal`, `model`, `scope`, `parent` |
+| `post_crash` | `bot_id`, `error`, `crash` (count) |
+| `pre_tick` / `post_tick` | `tick` (count), `plan` (state), `messages` (count) |
+| `pre_tool_use` | `tool_name`, `tool_input` |
+| `post_tool_use` | `tool_name`, `tool_input`, `is_error` |
+| `on_message` | `from`, `content`, `type` |
+| `on_stuck` | `tick`, `plan_state` |
+
+### Hook Output
+
+**Command hooks** communicate through exit codes:
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Success. Stdout parsed as JSON if present. |
+| `2` | Block the action. Stderr text is used as the block reason. |
+| Other | Non-blocking error. Execution continues. |
+
+**HTTP hooks**: 2xx response is success. Parse response body as JSON. Non-2xx is a non-blocking error.
+
+JSON output format:
+
+```json
+{"block": true, "reason": "Destructive command blocked"}
+{"context": "Additional information injected into the tick prompt"}
+```
+
+- `block` — Prevent the action (pre_spawn, pre_tick, pre_tool_use only)
+- `reason` — Shown to the bot or user explaining why the action was blocked
+- `context` — Injected as additional context into the tick prompt (pre_tick only)
+
+### Examples
+
+**Block dangerous shell commands:**
+
+```toml
+[hooks]
+pre_tool_use = [
+  { type = "command", command = "bash -c 'jq -e \".tool_name == \\\"shell\\\" and (.tool_input.command | test(\\\"rm -rf\\\"))\" && exit 2 || exit 0'", timeout = 5 }
+]
+```
+
+**Log all bot messages to a webhook:**
+
+```toml
+[hooks]
+on_message = [
+  { type = "http", url = "http://localhost:8080/hooks/message", async = true }
+]
+```
+
+**Alert on bot crashes:**
+
+```toml
+[hooks]
+post_crash = [
+  { type = "command", command = "bash -c 'cat | jq -r \\\"Bot \\(.bot_id) crashed (#\\(.payload.crash)): \\(.payload.error)\\\" | mail -s \\\"Bot Crash\\\" admin@example.com'", async = true }
+]
+```
