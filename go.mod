@@ -4,13 +4,13 @@ go 1.26.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/martinsuchenak/scriptling-llm-lib v0.0.3
+	github.com/martinsuchenak/scriptling-llm-lib v0.0.4
 	github.com/paularlott/cli v0.8.4
 	github.com/paularlott/gossip v0.12.5
 	github.com/paularlott/logger v0.3.0
-	github.com/paularlott/scriptling v0.7.1
+	github.com/paularlott/scriptling v0.8.0
 	golang.org/x/net v0.54.0
-	tailscale.com v1.98.1
+	tailscale.com v1.98.2
 )
 
 require (
