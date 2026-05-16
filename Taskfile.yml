@@ -10,6 +10,11 @@ vars:
 
 tasks:
 
+  fmt:
+    desc: Format Go code
+    cmds:
+      - gofmt -w -s .
+
   # ── Build ──────────────────────────────────────────────────────────────────
 
   build:
@@ -172,3 +177,17 @@ tasks:
     prompt: This will delete all bot directories in ../bots/. Continue?
     cmds:
       - rm -rf ../bots/*/
+
+  release:
+    desc: 'Create a version tag and push it (usage: task release -- v0.1.0)'
+    deps: [check, build]
+    preconditions:
+      - sh: 'test -n "{{.CLI_ARGS}}"'
+        msg: 'version tag required (e.g. task release -- v0.1.0)'
+      - sh: 'git diff --quiet'
+        msg: 'working tree has uncommitted changes'
+    cmds:      
+      - git tag {{.CLI_ARGS}}
+      - git push origin {{.CLI_ARGS}}
+      - echo "Tagged and pushed {{.CLI_ARGS}}"
+

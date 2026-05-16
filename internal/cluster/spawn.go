@@ -66,11 +66,11 @@ func (n *Node) handleSpawnReq(_ *gossip.Node, pkt *gossip.Packet) (interface{}, 
 	}
 
 	hookRes, err := hooks.Fire("pre_spawn", req.Name, map[string]interface{}{
-		"bot_id":  req.Name,
-		"parent":  req.ParentID,
-		"goal":    req.Goal,
-		"model":   req.Model,
-		"scope":   req.Scope,
+		"bot_id": req.Name,
+		"parent": req.ParentID,
+		"goal":   req.Goal,
+		"model":  req.Model,
+		"scope":  req.Scope,
 	})
 	if err != nil {
 		return spawnError("hook blocked spawn: " + err.Error()), nil
@@ -86,8 +86,8 @@ func (n *Node) handleSpawnReq(_ *gossip.Node, pkt *gossip.Packet) (interface{}, 
 	n.log.Info("spawned child bot", "parent", req.ParentID, "child", req.Name)
 
 	_, _ = hooks.Fire("post_spawn", req.Name, map[string]interface{}{
-		"bot_id":  req.Name,
-		"parent":  req.ParentID,
+		"bot_id": req.Name,
+		"parent": req.ParentID,
 	})
 
 	return &SpawnReply{BotID: req.Name}, nil

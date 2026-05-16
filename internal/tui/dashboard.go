@@ -2257,8 +2257,6 @@ func staleThreshold() time.Duration {
 	return time.Duration(n) * time.Second
 }
 
-
-
 func readLastN(path string, n int) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {

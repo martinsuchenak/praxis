@@ -44,21 +44,21 @@ type TsnetConfig struct {
 }
 
 type BotDefaults struct {
-	BaseURL          string `toml:"base_url"`
-	Model            string `toml:"model"`
-	APIKey           string `toml:"api_key"`
-	TickInterval     int    `toml:"tick_interval"`
-	TickMaxIter      int    `toml:"tick_max_iterations"`
-	LogVerbose       bool   `toml:"log_verbose"`
-	LogResultMax     int    `toml:"log_result_max"`
-	StaleThreshold   int    `toml:"stale_threshold"`
-	ScriptTimeout    int    `toml:"script_timeout"`
-	MaxBackoff       int    `toml:"max_backoff"`
-	MaxConcurrent    int    `toml:"max_concurrent"`
-	HTTPAllowlist    string `toml:"http_allowlist"`
-	ShellAllowlist   string `toml:"shell_allowlist"`
-	GossipSecret     string `toml:"gossip_secret"`
-	StuckTicks       int    `toml:"stuck_ticks"`
+	BaseURL        string `toml:"base_url"`
+	Model          string `toml:"model"`
+	APIKey         string `toml:"api_key"`
+	TickInterval   int    `toml:"tick_interval"`
+	TickMaxIter    int    `toml:"tick_max_iterations"`
+	LogVerbose     bool   `toml:"log_verbose"`
+	LogResultMax   int    `toml:"log_result_max"`
+	StaleThreshold int    `toml:"stale_threshold"`
+	ScriptTimeout  int    `toml:"script_timeout"`
+	MaxBackoff     int    `toml:"max_backoff"`
+	MaxConcurrent  int    `toml:"max_concurrent"`
+	HTTPAllowlist  string `toml:"http_allowlist"`
+	ShellAllowlist string `toml:"shell_allowlist"`
+	GossipSecret   string `toml:"gossip_secret"`
+	StuckTicks     int    `toml:"stuck_ticks"`
 }
 
 type WorkspaceEntry struct {
@@ -70,38 +70,38 @@ type WorkspaceEntry struct {
 }
 
 type ModelsConfig struct {
-	Default string        `toml:"default"`
-	Catalog []ModelEntry  `toml:"catalog"`
+	Default string       `toml:"default"`
+	Catalog []ModelEntry `toml:"catalog"`
 }
 
 type ModelEntry struct {
-	ID               string                 `toml:"id"`
-	Label            string                 `toml:"label"`
-	Description      string                 `toml:"description"`
-	Cost             string                 `toml:"cost"`
-	Strengths        []string               `toml:"strengths"`
-	Concurrency      int                    `toml:"concurrency"`
-	ThinkingTemplate string                 `toml:"thinking_template"`
-	BaseURL          string                 `toml:"base_url"`
-	APIKey           string                 `toml:"api_key"`
+	ID               string   `toml:"id"`
+	Label            string   `toml:"label"`
+	Description      string   `toml:"description"`
+	Cost             string   `toml:"cost"`
+	Strengths        []string `toml:"strengths"`
+	Concurrency      int      `toml:"concurrency"`
+	ThinkingTemplate string   `toml:"thinking_template"`
+	BaseURL          string   `toml:"base_url"`
+	APIKey           string   `toml:"api_key"`
 }
 
 type HooksConfig struct {
-	PreSpawn   []HookHandler `toml:"pre_spawn"`
-	PostSpawn  []HookHandler `toml:"post_spawn"`
-	PreStart   []HookHandler `toml:"pre_start"`
-	PostStart  []HookHandler `toml:"post_start"`
-	PreStop    []HookHandler `toml:"pre_stop"`
-	PostStop   []HookHandler `toml:"post_stop"`
-	PreKill    []HookHandler `toml:"pre_kill"`
-	PostKill   []HookHandler `toml:"post_kill"`
-	PostCrash  []HookHandler `toml:"post_crash"`
-	PreTick    []HookHandler `toml:"pre_tick"`
-	PostTick   []HookHandler `toml:"post_tick"`
-	PreToolUse []HookHandler `toml:"pre_tool_use"`
+	PreSpawn    []HookHandler `toml:"pre_spawn"`
+	PostSpawn   []HookHandler `toml:"post_spawn"`
+	PreStart    []HookHandler `toml:"pre_start"`
+	PostStart   []HookHandler `toml:"post_start"`
+	PreStop     []HookHandler `toml:"pre_stop"`
+	PostStop    []HookHandler `toml:"post_stop"`
+	PreKill     []HookHandler `toml:"pre_kill"`
+	PostKill    []HookHandler `toml:"post_kill"`
+	PostCrash   []HookHandler `toml:"post_crash"`
+	PreTick     []HookHandler `toml:"pre_tick"`
+	PostTick    []HookHandler `toml:"post_tick"`
+	PreToolUse  []HookHandler `toml:"pre_tool_use"`
 	PostToolUse []HookHandler `toml:"post_tool_use"`
-	OnMessage  []HookHandler `toml:"on_message"`
-	OnStuck    []HookHandler `toml:"on_stuck"`
+	OnMessage   []HookHandler `toml:"on_message"`
+	OnStuck     []HookHandler `toml:"on_stuck"`
 }
 
 type HookHandler struct {
