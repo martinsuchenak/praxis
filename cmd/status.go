@@ -12,7 +12,12 @@ func statusCmd() *cli.Command {
 	return &cli.Command{
 		Name:  "status",
 		Usage: "Show swarm status (file-based snapshot)",
+		Flags: remoteFlags(),
 		Run: func(ctx context.Context, cmd *cli.Command) error {
+			if nodeName := cmd.GetString("node"); nodeName != "" {
+				return remoteListBots(ctx, cmd)
+			}
+
 			app := appCtx(ctx)
 
 			bots, err := app.Manager.List()

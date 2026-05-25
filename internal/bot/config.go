@@ -41,6 +41,7 @@ type BotConfig struct {
 	AllowedWorkspaces []string `json:"allowed_workspaces,omitempty"`
 	Parent            string   `json:"parent,omitempty"`
 	GossipSecret      string   `json:"gossip_secret,omitempty"`
+	WatchdogNode      string   `json:"watchdog_node,omitempty"`
 	CreatedAt         int64    `json:"created_at"`
 }
 
@@ -68,6 +69,7 @@ func (c *BotConfig) AsDict() map[string]interface{} {
 		"allowed_workspaces": c.AllowedWorkspaces,
 		"parent":             c.Parent,
 		"gossip_secret":      c.GossipSecret,
+		"watchdog_node":      c.WatchdogNode,
 		"seed_addrs":         []string{},
 	}
 }

@@ -26,3 +26,10 @@ func (n *Node) validSecret(botID, secret string) bool {
 	}
 	return false
 }
+
+func (n *Node) validAdminSecret(secret string) bool {
+	if n.cfg.GlobalSecret == "" {
+		return secret == "" || n.cfg.AuthDisabled
+	}
+	return secret == n.cfg.GlobalSecret
+}

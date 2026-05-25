@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/paularlott/gossip"
 
@@ -61,12 +62,49 @@ func (n *Node) findWatchdogNode(nodeName string) *gossip.Node {
 		if gn.Metadata.GetString("node_name") == nodeName {
 			return gn
 		}
+		if gn.AdvertisedAddr() == nodeName {
+			return gn
+		}
 	}
 	return nil
 }
 
-// ListWatchdogNodes returns the node names of all watchdog peers in the cluster
-// (excluding self).
+type WatchdogPeer struct {
+	Name      string
+	Addr      string
+	BotsTotal int
+	BotsRunning int
+}
+
+func (n *Node) WatchdogPeers() []WatchdogPeer {
+	var peers []WatchdogPeer
+	for _, gn := range n.cluster.AliveNodes() {
+		if gn.Metadata.GetString("role") != "watchdog" {
+			continue
+		}
+		name := gn.Metadata.GetString("node_name")
+		if name == "" {
+			continue
+		}
+		if name == n.cfg.NodeName {
+			continue
+		}
+		total, _ := strconv.Atoi(gn.Metadata.GetString("bots_total"))
+		running, _ := strconv.Atoi(gn.Metadata.GetString("bots_running"))
+		peers = append(peers, WatchdogPeer{
+			Name:       name,
+			Addr:       gn.AdvertisedAddr(),
+			BotsTotal:  total,
+			BotsRunning: running,
+		})
+	}
+	return peers
+}
+
+func (n *Node) LocalNodeName() string {
+	return n.cfg.NodeName
+}
+
 func (n *Node) ListWatchdogNodes() []string {
 	var names []string
 	for _, gn := range n.cluster.AliveNodes() {
@@ -103,6 +141,8 @@ func (n *Node) handleRemoteSpawnReq(_ *gossip.Node, pkt *gossip.Packet) (interfa
 		Workspace:         req.Workspace,
 		Scope:             req.Scope,
 		AllowedWorkspaces: req.AllowedWorkspaces,
+		GossipSecret:      n.cfg.GlobalSecret,
+		WatchdogNode:      n.cfg.NodeName,
 	}
 
 	if err := n.manager.Create(childCfg); err != nil {

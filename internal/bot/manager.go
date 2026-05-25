@@ -157,6 +157,9 @@ func (m *Manager) UpdateConfig(id string, updates map[string]string) error {
 	if v, ok := updates["scope"]; ok {
 		cfg.Scope = v
 	}
+	if v, ok := updates["watchdog_node"]; ok {
+		cfg.WatchdogNode = v
+	}
 	return SaveConfig(botDir, cfg)
 }
 

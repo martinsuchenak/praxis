@@ -1112,3 +1112,454 @@ func TestHandleTerminateReqUnauthorized(t *testing.T) {
 		t.Errorf("error = %q, want unauthorized", tr.Error)
 	}
 }
+
+// --- validAdminSecret ---
+
+func TestValidAdminSecretEmpty(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+	if !n.validAdminSecret("") {
+		t.Error("expected valid: no secret configured, empty matches")
+	}
+}
+
+func TestValidAdminSecretMatchesGlobal(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "global123")
+	if !n.validAdminSecret("global123") {
+		t.Error("expected valid: correct global secret")
+	}
+}
+
+func TestValidAdminSecretRejectsBotSecret(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{GossipSecret: "bot-secret"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "global123")
+	if n.validAdminSecret("bot-secret") {
+		t.Error("expected invalid: bot secret must not be accepted for admin")
+	}
+}
+
+func TestValidAdminSecretRejectsWrong(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "global123")
+	if n.validAdminSecret("wrong") {
+		t.Error("expected invalid: wrong secret")
+	}
+}
+
+func TestValidAdminSecretAuthDisabled(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+	n.cfg.AuthDisabled = true
+	if !n.validAdminSecret("") {
+		t.Error("expected valid: auth-disabled mode")
+	}
+	if !n.validAdminSecret("anything") {
+		t.Error("expected valid: auth-disabled mode with any secret")
+	}
+}
+
+// --- handleListBotsReq ---
+
+func TestHandleListBotsReqSuccess(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test goal", Model: "test-model"})
+	testutil.TempBot(t, root, "bot2", &bot.BotConfig{Name: "bot2", Goal: "other goal", Model: "other-model"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, err := n.handleListBotsReq(nil, testPacket(t, ListBotsRequest{Type: TypeListBotsReq, Secret: "s3cret"}))
+	if err != nil {
+		t.Fatalf("handleListBotsReq: %v", err)
+	}
+	reply, ok := resp.(*ListBotsReply)
+	if !ok {
+		t.Fatalf("expected ListBotsReply, got %T", resp)
+	}
+	if reply.Error != "" {
+		t.Fatalf("unexpected error: %s", reply.Error)
+	}
+	if len(reply.Bots) != 2 {
+		t.Fatalf("expected 2 bots, got %d", len(reply.Bots))
+	}
+	names := map[string]bool{}
+	for _, b := range reply.Bots {
+		names[b.Name] = true
+		if b.Name == "bot1" && b.Goal != "test goal" {
+			t.Errorf("bot1 goal = %q, want %q", b.Goal, "test goal")
+		}
+	}
+	if !names["bot1"] || !names["bot2"] {
+		t.Errorf("expected bot1 and bot2, got %v", names)
+	}
+}
+
+func TestHandleListBotsReqInvalidSecret(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleListBotsReq(nil, testPacket(t, ListBotsRequest{Type: TypeListBotsReq, Secret: "wrong"}))
+	reply, ok := resp.(*ListBotsReply)
+	if !ok {
+		t.Fatalf("expected ListBotsReply, got %T", resp)
+	}
+	if reply.Error != "invalid secret" {
+		t.Errorf("error = %q, want invalid secret", reply.Error)
+	}
+}
+
+func TestHandleListBotsReqBadUnmarshal(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleListBotsReq(nil, testCorruptPacket(t))
+	reply, ok := resp.(*ListBotsReply)
+	if !ok {
+		t.Fatalf("expected ListBotsReply, got %T", resp)
+	}
+	if reply.Error == "" {
+		t.Error("expected error for bad payload")
+	}
+}
+
+// --- handleBotControlReq ---
+
+func TestHandleBotControlReqStart(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, err := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		BotID:  "bot1",
+		Action: "start",
+		Secret: "s3cret",
+	}))
+	if err != nil {
+		t.Fatalf("handleBotControlReq: %v", err)
+	}
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error != "" {
+		t.Fatalf("unexpected error: %s", reply.Error)
+	}
+	if reply.Status != "started" {
+		t.Errorf("status = %q, want started", reply.Status)
+	}
+}
+
+func TestHandleBotControlReqRemove(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		BotID:  "bot1",
+		Action: "remove",
+		Secret: "s3cret",
+	}))
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error != "" {
+		t.Fatalf("unexpected error: %s", reply.Error)
+	}
+	if reply.Status != "removed" {
+		t.Errorf("status = %q, want removed", reply.Status)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Bots", "bot1")); !os.IsNotExist(err) {
+		t.Error("expected bot directory to be removed")
+	}
+}
+
+func TestHandleBotControlReqRefresh(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		BotID:  "bot1",
+		Action: "refresh",
+		Secret: "s3cret",
+	}))
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error != "" {
+		t.Fatalf("unexpected error: %s", reply.Error)
+	}
+	if reply.Status != "refreshed" {
+		t.Errorf("status = %q, want refreshed", reply.Status)
+	}
+}
+
+func TestHandleBotControlReqInvalidSecret(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		BotID:  "bot1",
+		Action: "start",
+		Secret: "wrong",
+	}))
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error != "invalid secret" {
+		t.Errorf("error = %q, want invalid secret", reply.Error)
+	}
+}
+
+func TestHandleBotControlReqBotSecretRejected(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", GossipSecret: "bot-secret", Goal: "test", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "global123")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		BotID:  "bot1",
+		Action: "kill",
+		Secret: "bot-secret",
+	}))
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error != "invalid secret" {
+		t.Errorf("error = %q, want invalid secret (bot secret must not work for admin)", reply.Error)
+	}
+}
+
+func TestHandleBotControlReqBotNotFound(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		BotID:  "nonexistent",
+		Action: "start",
+		Secret: "s3cret",
+	}))
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error == "" {
+		t.Error("expected error for unknown bot")
+	}
+}
+
+func TestHandleBotControlReqMissingBotID(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		Secret: "s3cret",
+	}))
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error != "bot_id is required" {
+		t.Errorf("error = %q, want bot_id is required", reply.Error)
+	}
+}
+
+func TestHandleBotControlReqUnknownAction(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		BotID:  "bot1",
+		Action: "explode",
+		Secret: "s3cret",
+	}))
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error != "unknown action: explode" {
+		t.Errorf("error = %q, want unknown action: explode", reply.Error)
+	}
+}
+
+func TestHandleBotControlReqBadUnmarshal(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testCorruptPacket(t))
+	reply, ok := resp.(*BotControlReply)
+	if !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+	if reply.Error == "" {
+		t.Error("expected error for bad payload")
+	}
+}
+
+// --- handleLogsReq ---
+
+func TestHandleLogsReqSuccess(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test", Model: "m"})
+
+	logDir := filepath.Join(root, "Bots", "bot1")
+	os.WriteFile(filepath.Join(logDir, "bot.log"), []byte("line1\nline2\n"), 0644)
+	os.WriteFile(filepath.Join(logDir, "output.log"), []byte("out1\n"), 0644)
+
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, err := n.handleLogsReq(nil, testPacket(t, LogsRequest{
+		Type:   TypeLogsReq,
+		BotID:  "bot1",
+		Lines:  10,
+		Secret: "s3cret",
+	}))
+	if err != nil {
+		t.Fatalf("handleLogsReq: %v", err)
+	}
+	reply, ok := resp.(*LogsReply)
+	if !ok {
+		t.Fatalf("expected LogsReply, got %T", resp)
+	}
+	if reply.Error != "" {
+		t.Fatalf("unexpected error: %s", reply.Error)
+	}
+	if !strings.Contains(reply.Content, "line1") {
+		t.Error("expected log content to contain 'line1'")
+	}
+	if !strings.Contains(reply.Content, "bot.log") {
+		t.Error("expected log content to contain 'bot.log' header")
+	}
+}
+
+func TestHandleLogsReqBotNotFound(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleLogsReq(nil, testPacket(t, LogsRequest{
+		Type:   TypeLogsReq,
+		BotID:  "nonexistent",
+		Lines:  10,
+		Secret: "s3cret",
+	}))
+	reply, ok := resp.(*LogsReply)
+	if !ok {
+		t.Fatalf("expected LogsReply, got %T", resp)
+	}
+	if reply.Error == "" {
+		t.Error("expected error for unknown bot")
+	}
+}
+
+func TestHandleLogsReqInvalidSecret(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleLogsReq(nil, testPacket(t, LogsRequest{
+		Type:   TypeLogsReq,
+		BotID:  "bot1",
+		Secret: "wrong",
+	}))
+	reply, ok := resp.(*LogsReply)
+	if !ok {
+		t.Fatalf("expected LogsReply, got %T", resp)
+	}
+	if reply.Error != "invalid secret" {
+		t.Errorf("error = %q, want invalid secret", reply.Error)
+	}
+}
+
+func TestHandleLogsReqMissingBotID(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleLogsReq(nil, testPacket(t, LogsRequest{
+		Type:   TypeLogsReq,
+		Secret: "s3cret",
+	}))
+	reply, ok := resp.(*LogsReply)
+	if !ok {
+		t.Fatalf("expected LogsReply, got %T", resp)
+	}
+	if reply.Error != "bot_id is required" {
+		t.Errorf("error = %q, want bot_id is required", reply.Error)
+	}
+}
+
+func TestHandleLogsReqDefaultLines(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test", Model: "m"})
+	os.WriteFile(filepath.Join(root, "Bots", "bot1", "bot.log"), []byte("x\n"), 0644)
+
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleLogsReq(nil, testPacket(t, LogsRequest{
+		Type:   TypeLogsReq,
+		BotID:  "bot1",
+		Lines:  0,
+		Secret: "s3cret",
+	}))
+	reply, ok := resp.(*LogsReply)
+	if !ok {
+		t.Fatalf("expected LogsReply, got %T", resp)
+	}
+	if reply.Error != "" {
+		t.Fatalf("unexpected error: %s", reply.Error)
+	}
+	if !strings.Contains(reply.Content, "last 40 lines") {
+		t.Errorf("expected default 40 lines, got: %s", reply.Content)
+	}
+}
+
+// --- handleBotMsg dispatch for new types ---
+
+func TestHandleBotMsgDispatchListBots(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, err := n.handleBotMsg(nil, testPacket(t, botRequest{Type: TypeListBotsReq}))
+	if err != nil {
+		t.Fatalf("handleBotMsg: %v", err)
+	}
+	if _, ok := resp.(*ListBotsReply); !ok {
+		t.Fatalf("expected ListBotsReply, got %T", resp)
+	}
+}
+
+func TestHandleBotMsgDispatchBotControl(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, err := n.handleBotMsg(nil, testPacket(t, botRequest{Type: TypeBotControlReq}))
+	if err != nil {
+		t.Fatalf("handleBotMsg: %v", err)
+	}
+	if _, ok := resp.(*BotControlReply); !ok {
+		t.Fatalf("expected BotControlReply, got %T", resp)
+	}
+}
+
+func TestHandleBotMsgDispatchLogs(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, err := n.handleBotMsg(nil, testPacket(t, botRequest{Type: TypeLogsReq}))
+	if err != nil {
+		t.Fatalf("handleBotMsg: %v", err)
+	}
+	if _, ok := resp.(*LogsReply); !ok {
+		t.Fatalf("expected LogsReply, got %T", resp)
+	}
+}

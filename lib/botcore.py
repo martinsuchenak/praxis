@@ -996,10 +996,16 @@ def _read_file_range(args):
 
 
 def _find_watchdog():
+    own_node = CONFIG.get("watchdog_node", "")
+    fallback = None
     for n in cluster.alive_nodes():
-        if n.get("metadata", {}).get("role") == "watchdog":
-            return n
-    return None
+        meta = n.get("metadata", {})
+        if meta.get("role") == "watchdog":
+            if own_node and meta.get("node_name") == own_node:
+                return n
+            if fallback is None:
+                fallback = n
+    return fallback
 
 
 def _shell(args):

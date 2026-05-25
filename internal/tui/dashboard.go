@@ -38,9 +38,13 @@ type Dashboard struct {
 
 	mu          sync.Mutex
 	selectedBot string
+	selectedNode string
 	logCancel   context.CancelFunc
 	logOffset   int64
 	vizActive   bool
+
+	expandedNodes map[string]bool
+	remoteBots    map[string][]cluster.BotEntry
 
 	botNameCmds []*gotui.Command
 
@@ -51,12 +55,14 @@ type Dashboard struct {
 
 func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.Sandbox, log logger.Logger, cfg *config.Config) *Dashboard {
 	d := &Dashboard{
-		mgr:  mgr,
-		pool: pool,
-		node: node,
-		sb:   sb,
-		log:  log,
-		cfg:  cfg,
+		mgr:           mgr,
+		pool:          pool,
+		node:          node,
+		sb:            sb,
+		log:           log,
+		cfg:           cfg,
+		expandedNodes: make(map[string]bool),
+		remoteBots:    make(map[string][]cluster.BotEntry),
 	}
 
 	themeNames := gotui.ThemeNames()
@@ -75,25 +81,27 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 		OnFocusChange:  func(_ *gotui.Panel) {},
 		OnInterrupt:    d.handleInterrupt,
 		Commands: []*gotui.Command{
-			botCmd("select", "Switch log view to a bot", func(args string) { d.cmdSelect(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("select", "Switch log view to a bot [bot] [node=<n>]", func(args string) { d.cmdSelect(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "list", Description: "List all bots with details", Handler: func(_ string) { d.cmdList() }},
-			botCmd("info", "Show full bot config/status [bot]", func(args string) { d.cmdInfo(strings.TrimSpace(args)) }, &botNameCmds),
-			botCmd("logs", "Show recent log lines [bot] [lines]", func(args string) { d.cmdLogs(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("info", "Show full bot config/status [bot] [node=<n>]", func(args string) { d.cmdInfo(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("logs", "Show recent log lines [bot] [lines] [node=<n>]", func(args string) { d.cmdLogs(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "top", Description: "Scroll log panel to top", Handler: func(_ string) { d.ui.Panel("main").ScrollToTop() }},
-			botCmd("start", "Start a bot [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [msg]", func(args string) { d.cmdStartWithMessage(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("start", "Start a bot [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [node=<n>] [msg]", func(args string) { d.cmdStartWithMessage(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "start-all", Description: "Start all stopped bots", Handler: func(_ string) { d.cmdStartAll() }},
-			botCmd("stop", "Stop a bot gracefully [bot]", func(args string) { d.cmdStop(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("stop", "Stop a bot gracefully [bot] [node=<n>]", func(args string) { d.cmdStop(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "stop-all", Description: "Stop all running bots", Handler: func(_ string) { d.cmdStopAll() }},
-			botCmd("kill", "Kill a bot immediately [bot]", func(args string) { d.cmdKill(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("kill", "Kill a bot immediately [bot] [node=<n>]", func(args string) { d.cmdKill(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "kill-all", Description: "Kill all running bots", Handler: func(_ string) { d.cmdKillAll() }},
-			botCmd("restart", "Kill and restart a bot [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [msg]", func(args string) { d.cmdRestartWithConfig(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("restart", "Kill and restart a bot [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [node=<n>] [msg]", func(args string) { d.cmdRestartWithConfig(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "restart-stale", Description: "Restart all stale bots", Handler: func(_ string) { d.cmdRestartStale() }},
-			botCmd("refresh", "Update bot.py from current template [bot]", func(args string) { d.cmdRefresh(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("refresh", "Update bot.py from current template [bot] [node=<n>]", func(args string) { d.cmdRefresh(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "refresh-all", Description: "Update all bots bot.py from current template", Handler: func(_ string) { d.cmdRefreshAll() }},
-			botCmd("remove", "Kill and permanently delete a bot", func(args string) { d.cmdRemove(strings.TrimSpace(args)) }, &botNameCmds),
+			botCmd("remove", "Kill and permanently delete a bot [bot] [node=<n>]", func(args string) { d.cmdRemove(strings.TrimSpace(args)) }, &botNameCmds),
 			botCmd("send", "Send a message to a bot <bot> <msg>", func(args string) { d.cmdSend(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "spawn", Description: `Spawn a new bot <name> "<goal>" [model=<m>] [workspace=<w>] [scope=<s>] [thinking=<true|false>] [node=<n>]`, Handler: func(args string) { d.cmdSpawn(strings.TrimSpace(args)) }},
 			{Name: "nodes", Description: "List watchdog nodes in the cluster", Handler: func(_ string) { d.cmdNodes() }},
+			{Name: "expand", Description: "Expand a remote node to show its bots <node>", Handler: func(args string) { d.cmdExpand(strings.TrimSpace(args)) }},
+			{Name: "collapse", Description: "Collapse a remote node <node>", Handler: func(args string) { d.cmdCollapse(strings.TrimSpace(args)) }},
 			botCmd("export", "Export a bot archive <bot> [path]", func(args string) { d.cmdExport(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "workspace", Description: "Manage workspaces: list|add|remove", Handler: func(args string) { d.cmdWorkspace(strings.TrimSpace(args)) }},
 			{Name: "theme", Description: "Switch colour theme", Args: themeArgs, Handler: func(args string) { d.cmdTheme(strings.TrimSpace(args)) }},
@@ -167,6 +175,8 @@ func (d *Dashboard) refreshBotPanel() {
 
 	d.mu.Lock()
 	sel := d.selectedBot
+	expanded := d.expandedNodes
+	remoteBots := d.remoteBots
 	d.mu.Unlock()
 
 	alive := 0
@@ -179,6 +189,13 @@ func (d *Dashboard) refreshBotPanel() {
 
 	theme := d.ui.Theme()
 	var sb strings.Builder
+
+	localName := "local"
+	if d.node != nil {
+		localName = d.node.LocalNodeName()
+	}
+
+	sb.WriteString(d.botPanel.Styled(theme.Primary, "▼ "+localName) + fmt.Sprintf(" (%d/%d)\n", alive, len(bots)))
 
 	for _, b := range bots {
 		cfg := b.Config
@@ -209,7 +226,7 @@ func (d *Dashboard) refreshBotPanel() {
 			name = d.botPanel.Styled(theme.Primary, name)
 		}
 
-		header := marker + " " + name + " — " + d.botPanel.Styled(color, st.Status)
+		header := "  " + marker + " " + name + " — " + d.botPanel.Styled(color, st.Status)
 		if ticks := st.TicksAlive(); ticks > 0 {
 			header += fmt.Sprintf(", %dt", ticks)
 		}
@@ -222,32 +239,91 @@ func (d *Dashboard) refreshBotPanel() {
 		if len(goal) > 60 {
 			goal = goal[:57] + "..."
 		}
-		fmt.Fprintf(&sb, "  Goal:     %s\n", goal)
-		fmt.Fprintf(&sb, "  Model:    %s\n", cfg.Model)
-		fmt.Fprintf(&sb, "  Thinking: %t\n", cfg.Thinking)
+		fmt.Fprintf(&sb, "    Goal:     %s\n", goal)
+		fmt.Fprintf(&sb, "    Model:    %s\n", cfg.Model)
+		fmt.Fprintf(&sb, "    Thinking: %t\n", cfg.Thinking)
 
 		scope := cfg.Scope
 		if scope == "" {
 			scope = "open"
 		}
-		fmt.Fprintf(&sb, "  Scope:    %s\n", scope)
+		fmt.Fprintf(&sb, "    Scope:    %s\n", scope)
 
 		if cfg.Parent != "" {
-			fmt.Fprintf(&sb, "  Parent:   %s\n", cfg.Parent)
+			fmt.Fprintf(&sb, "    Parent:   %s\n", cfg.Parent)
 		}
 		if st.GossipAddr != "" {
-			fmt.Fprintf(&sb, "  Gossip:   %s\n", st.GossipAddr)
+			fmt.Fprintf(&sb, "    Gossip:   %s\n", st.GossipAddr)
 		}
 
 		sb.WriteString("\n")
 	}
 
-	if gc := d.node.Cluster(); gc != nil {
-		peerCount := len(gc.AliveNodes())
-		fmt.Fprintf(&sb, "peers: %d\n", peerCount-1) // exclude self
+	if d.node != nil {
+		peers := d.node.WatchdogPeers()
+		for _, peer := range peers {
+			isExpanded := expanded[peer.Name]
+			arrow := "▶"
+			if isExpanded {
+				arrow = "▼"
+			}
+			sb.WriteString(d.botPanel.Styled(theme.Secondary, arrow+" "+peer.Name) + fmt.Sprintf(" (%d/%d)\n", peer.BotsRunning, peer.BotsTotal))
+
+			if isExpanded {
+				remote := remoteBots[peer.Name]
+				for _, rb := range remote {
+					var marker string
+					var color gotui.Color
+					switch rb.Status {
+					case bot.StatusRunning:
+						marker = "●"
+						color = theme.Primary
+					case bot.StatusStarting:
+						marker = "◌"
+						color = theme.Secondary
+					case bot.StatusKilled:
+						marker = "✕"
+						color = theme.Error
+					default:
+						marker = "○"
+						color = theme.Dim
+					}
+
+					name := rb.Name
+					if name == sel && d.selectedNode == peer.Name {
+						name = d.botPanel.Styled(theme.Primary, name)
+					}
+
+					header := "    " + marker + " " + name + " — " + d.botPanel.Styled(color, rb.Status)
+					if rb.Ticks > 0 {
+						header += fmt.Sprintf(", %dt", rb.Ticks)
+					}
+					sb.WriteString(header + "\n")
+					goal := rb.Goal
+					if len(goal) > 56 {
+						goal = goal[:53] + "..."
+					}
+					fmt.Fprintf(&sb, "      Goal:     %s\n", goal)
+					fmt.Fprintf(&sb, "      Model:    %s\n", rb.Model)
+				}
+				if len(remote) == 0 {
+					sb.WriteString("    (no bots)\n")
+				}
+				sb.WriteString("\n")
+			}
+		}
 	}
 
-	d.botPanel.SetTitle(fmt.Sprintf("BOTS %d/%d", alive, len(bots)))
+	totalBots := alive
+	totalAll := len(bots)
+	if d.node != nil {
+		for _, peer := range d.node.WatchdogPeers() {
+			totalBots += peer.BotsRunning
+			totalAll += peer.BotsTotal
+		}
+	}
+
+	d.botPanel.SetTitle(fmt.Sprintf("BOTS %d/%d", totalBots, totalAll))
 	d.botPanel.SetContent(sb.String())
 }
 
@@ -413,6 +489,42 @@ func (d *Dashboard) refreshDetailPanel() {
 				fmt.Fprintf(&sb, " %s\n", d.detailPanel.Styled(theme.Text, name))
 			}
 		}
+
+		type nodeInfo struct {
+			Name       string
+			Address    string
+			BotsTotal  int
+			BotsRunning int
+		}
+		var nodes []nodeInfo
+		selfName := ""
+		selfTotal, selfRunning := 0, 0
+		for _, gn := range d.node.Cluster().AliveNodes() {
+			if gn.Metadata.GetString("role") != "watchdog" {
+				continue
+			}
+			name := gn.Metadata.GetString("node_name")
+			if name == "" {
+				name = gn.AdvertisedAddr()
+			}
+			total, _ := strconv.Atoi(gn.Metadata.GetString("bots_total"))
+			running, _ := strconv.Atoi(gn.Metadata.GetString("bots_running"))
+			if gn.ID == d.node.Cluster().LocalNode().ID {
+				selfName = name
+				selfTotal = total
+				selfRunning = running
+				continue
+			}
+			nodes = append(nodes, nodeInfo{Name: name, Address: gn.AdvertisedAddr(), BotsTotal: total, BotsRunning: running})
+		}
+
+		if len(nodes) > 0 || selfName != "" {
+			sb.WriteString("\n" + d.detailPanel.Styled(theme.Primary, fmt.Sprintf("━━━ nodes %d ━━━", len(nodes)+1)) + "\n\n")
+			fmt.Fprintf(&sb, " %s %s %d/%d\n", d.detailPanel.Styled(theme.Text, selfName), d.detailPanel.Styled(theme.Secondary, "(self)"), selfRunning, selfTotal)
+			for _, n := range nodes {
+				fmt.Fprintf(&sb, " %s %d/%d\n", d.detailPanel.Styled(theme.Text, n.Name), n.BotsRunning, n.BotsTotal)
+			}
+		}
 	}
 
 	d.detailPanel.SetContent(sb.String())
@@ -554,14 +666,44 @@ func (d *Dashboard) onSubmit(text string) {
 
 func (d *Dashboard) cmdSelect(name string) {
 	if name == "" {
-		d.showInfo("usage: /select <bot>")
+		d.showInfo("usage: /select <bot> [node=<n>]")
 		return
 	}
-	if _, err := d.mgr.Get(name); err != nil {
-		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
+	botName, nodeName := d.resolveBotAndNode(name)
+	if !d.isLocalNode(nodeName) {
+		d.mu.Lock()
+		d.selectedBot = botName
+		d.selectedNode = nodeName
+		d.mu.Unlock()
+		d.refreshBotPanel()
+		d.showInfo(fmt.Sprintf("selected %s@%s", botName, nodeName))
 		return
 	}
-	d.selectBot(d.ui.Context(), name)
+	if _, err := d.mgr.Get(botName); err != nil {
+		d.showInfo(fmt.Sprintf("unknown bot: %s", botName))
+		return
+	}
+	d.selectBot(d.ui.Context(), botName)
+}
+
+func (d *Dashboard) resolveBotAndNode(input string) (botName, nodeName string) {
+	parts := strings.Fields(input)
+	for _, p := range parts {
+		if strings.HasPrefix(p, "node=") {
+			nodeName = strings.TrimPrefix(p, "node=")
+		} else if botName == "" {
+			botName = p
+		}
+	}
+	d.mu.Lock()
+	if botName == "" {
+		botName = d.selectedBot
+	}
+	if nodeName == "" {
+		nodeName = d.selectedNode
+	}
+	d.mu.Unlock()
+	return
 }
 
 func (d *Dashboard) cmdList() {
@@ -651,16 +793,50 @@ func (d *Dashboard) applyConfigAndRefresh(name string, args string) ([]string, s
 func (d *Dashboard) cmdStartWithMessage(args string) {
 	var remaining string
 	var name string
+	var nodeName string
 	{
 		d.mu.Lock()
 		selected := d.selectedBot
+		selectedNode := d.selectedNode
 		d.mu.Unlock()
 		remaining, name = extractBotName(args, selected)
+		kvRest, kvArgs := parseKeyValueArgs(remaining)
+		if n, ok := kvArgs["node"]; ok {
+			nodeName = n
+			delete(kvArgs, "node")
+		} else {
+			nodeName = selectedNode
+		}
+		var rebuilt []string
+		for k, v := range kvArgs {
+			rebuilt = append(rebuilt, k+"="+v)
+		}
+		if kvRest != "" {
+			rebuilt = append([]string{kvRest}, rebuilt...)
+		}
+		remaining = strings.Join(rebuilt, " ")
 	}
 	if name == "" {
-		d.showInfo("usage: /start <bot> [key=value ...] [message]")
+		d.showInfo("usage: /start <bot> [key=value ...] [node=<n>] [message]")
 		return
 	}
+
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		if err := d.node.ControlRemoteBot(nodeName, name, "start"); err != nil {
+			d.showInfo(fmt.Sprintf("start %s@%s: %v", name, nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("started %s@%s", name, nodeName))
+		if remaining != "" {
+			d.showInfo(fmt.Sprintf("(message not sent to remote bot: %s)", remaining))
+		}
+		return
+	}
+
 	b, err := d.mgr.Get(name)
 	if err != nil {
 		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
@@ -800,8 +976,19 @@ func (d *Dashboard) refreshBotNameArgs() {
 	for i, b := range bots {
 		names[i] = b.Config.Name
 	}
+
+	var nodeArgs []string
+	if d.node != nil {
+		for _, p := range d.node.ListWatchdogNodes() {
+			nodeArgs = append(nodeArgs, "node="+p)
+		}
+	}
+
 	for _, cmd := range d.botNameCmds {
-		cmd.Args = names
+		args := make([]string, 0, len(names)+len(nodeArgs))
+		args = append(args, names...)
+		args = append(args, nodeArgs...)
+		cmd.Args = args
 	}
 }
 
@@ -828,13 +1015,21 @@ func (d *Dashboard) cmdStartAll() {
 }
 
 func (d *Dashboard) cmdStop(name string) {
+	name, nodeName := d.resolveBotAndNode(name)
 	if name == "" {
-		d.mu.Lock()
-		name = d.selectedBot
-		d.mu.Unlock()
+		d.showInfo("usage: /stop <bot> [node=<n>]")
+		return
 	}
-	if name == "" {
-		d.showInfo("usage: /stop <bot>")
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		if err := d.node.ControlRemoteBot(nodeName, name, "stop"); err != nil {
+			d.showInfo(fmt.Sprintf("stop %s@%s: %v", name, nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("stopping %s@%s", name, nodeName))
 		return
 	}
 	if err := d.pool.Stop(name); err != nil {
@@ -863,28 +1058,36 @@ func (d *Dashboard) cmdStopAll() {
 }
 
 func (d *Dashboard) cmdRefresh(name string) {
-	if name == "" {
-		d.mu.Lock()
-		name = d.selectedBot
-		d.mu.Unlock()
-	}
-	if name == "" {
-		d.showInfo("usage: /refresh <bot>")
+	botName, nodeName := d.resolveBotAndNode(name)
+	if botName == "" {
+		d.showInfo("usage: /refresh <bot> [node=<n>]")
 		return
 	}
-	if _, err := d.mgr.Get(name); err != nil {
-		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		if err := d.node.ControlRemoteBot(nodeName, botName, "refresh"); err != nil {
+			d.showInfo(fmt.Sprintf("refresh %s@%s: %v", botName, nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("refreshed bot.py for %s@%s", botName, nodeName))
 		return
 	}
-	if err := d.mgr.RefreshTemplate(name); err != nil {
-		d.showInfo(fmt.Sprintf("refresh %s: %v", name, err))
+	if _, err := d.mgr.Get(botName); err != nil {
+		d.showInfo(fmt.Sprintf("unknown bot: %s", botName))
+		return
+	}
+	if err := d.mgr.RefreshTemplate(botName); err != nil {
+		d.showInfo(fmt.Sprintf("refresh %s: %v", botName, err))
 		return
 	}
 	hint := ""
-	if b, _ := d.mgr.Get(name); b != nil && (b.State.Status == bot.StatusRunning || b.State.Status == bot.StatusStarting) {
+	if b, _ := d.mgr.Get(botName); b != nil && (b.State.Status == bot.StatusRunning || b.State.Status == bot.StatusStarting) {
 		hint = " — /restart to apply"
 	}
-	d.showInfo("refreshed bot.py for " + name + hint)
+	d.showInfo("refreshed bot.py for " + botName + hint)
 }
 
 func (d *Dashboard) cmdRefreshAll() {
@@ -909,13 +1112,21 @@ func (d *Dashboard) cmdRefreshAll() {
 }
 
 func (d *Dashboard) cmdKill(name string) {
+	name, nodeName := d.resolveBotAndNode(name)
 	if name == "" {
-		d.mu.Lock()
-		name = d.selectedBot
-		d.mu.Unlock()
+		d.showInfo("usage: /kill <bot> [node=<n>]")
+		return
 	}
-	if name == "" {
-		d.showInfo("usage: /kill <bot>")
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		if err := d.node.ControlRemoteBot(nodeName, name, "kill"); err != nil {
+			d.showInfo(fmt.Sprintf("kill %s@%s: %v", name, nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("killed %s@%s", name, nodeName))
 		return
 	}
 	if err := d.pool.Kill(name); err != nil {
@@ -946,14 +1157,44 @@ func (d *Dashboard) cmdKillAll() {
 func (d *Dashboard) cmdRestartWithConfig(args string) {
 	var remaining string
 	var name string
+	var nodeName string
 	{
 		d.mu.Lock()
 		selected := d.selectedBot
+		selectedNode := d.selectedNode
 		d.mu.Unlock()
 		remaining, name = extractBotName(args, selected)
+		kvRest, kvArgs := parseKeyValueArgs(remaining)
+		if n, ok := kvArgs["node"]; ok {
+			nodeName = n
+			delete(kvArgs, "node")
+		} else {
+			nodeName = selectedNode
+		}
+		var rebuilt []string
+		for k, v := range kvArgs {
+			rebuilt = append(rebuilt, k+"="+v)
+		}
+		if kvRest != "" {
+			rebuilt = append([]string{kvRest}, rebuilt...)
+		}
+		remaining = strings.Join(rebuilt, " ")
 	}
 	if name == "" {
-		d.showInfo("usage: /restart <bot> [key=value ...] [message]")
+		d.showInfo("usage: /restart <bot> [key=value ...] [node=<n>] [message]")
+		return
+	}
+
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		if err := d.node.ControlRemoteBot(nodeName, name, "restart"); err != nil {
+			d.showInfo(fmt.Sprintf("restart %s@%s: %v", name, nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("restarted %s@%s", name, nodeName))
 		return
 	}
 
@@ -1015,24 +1256,37 @@ func (d *Dashboard) cmdRestartStale() {
 }
 
 func (d *Dashboard) cmdRemove(name string) {
-	if name == "" {
-		d.showInfo("usage: /remove <bot>")
+	botName, nodeName := d.resolveBotAndNode(name)
+	if botName == "" {
+		d.showInfo("usage: /remove <bot> [node=<n>]")
 		return
 	}
-	if _, err := d.mgr.Get(name); err != nil {
-		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		if err := d.node.ControlRemoteBot(nodeName, botName, "remove"); err != nil {
+			d.showInfo(fmt.Sprintf("remove %s@%s: %v", botName, nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("removed %s@%s", botName, nodeName))
 		return
 	}
-	if err := d.pool.Kill(name); err != nil && !strings.Contains(err.Error(), "not running") {
-		d.showInfo(fmt.Sprintf("kill %s: %v", name, err))
+	if _, err := d.mgr.Get(botName); err != nil {
+		d.showInfo(fmt.Sprintf("unknown bot: %s", botName))
 		return
 	}
-	d.mgr.RemoveLocks(name)
-	if err := d.mgr.Delete(name); err != nil {
+	if err := d.pool.Kill(botName); err != nil && !strings.Contains(err.Error(), "not running") {
+		d.showInfo(fmt.Sprintf("kill %s: %v", botName, err))
+		return
+	}
+	d.mgr.RemoveLocks(botName)
+	if err := d.mgr.Delete(botName); err != nil {
 		return
 	}
 	d.mu.Lock()
-	if d.selectedBot == name {
+	if d.selectedBot == botName {
 		d.selectedBot = ""
 		if d.logCancel != nil {
 			d.logCancel()
@@ -1040,7 +1294,7 @@ func (d *Dashboard) cmdRemove(name string) {
 		}
 	}
 	d.mu.Unlock()
-	d.showInfo(fmt.Sprintf("removed %s", name))
+	d.showInfo(fmt.Sprintf("removed %s", botName))
 }
 
 func (d *Dashboard) cmdSend(args string) {
@@ -1065,18 +1319,55 @@ func (d *Dashboard) cmdSend(args string) {
 }
 
 func (d *Dashboard) cmdInfo(name string) {
-	if name == "" {
-		d.mu.Lock()
-		name = d.selectedBot
-		d.mu.Unlock()
-	}
-	if name == "" {
-		d.showInfo("usage: /info <bot>")
+	botName, nodeName := d.resolveBotAndNode(name)
+	if botName == "" {
+		d.showInfo("usage: /info <bot> [node=<n>]")
 		return
 	}
-	b, err := d.mgr.Get(name)
+
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		d.ui.StartSpinner("fetching info from " + nodeName)
+		bots, err := d.node.ListRemoteBots(nodeName)
+		d.ui.StopSpinner()
+		if err != nil {
+			d.showInfo(fmt.Sprintf("info %s@%s: %v", botName, nodeName, err))
+			return
+		}
+		var found *cluster.BotEntry
+		for i := range bots {
+			if bots[i].Name == botName {
+				found = &bots[i]
+				break
+			}
+		}
+		if found == nil {
+			d.showInfo(fmt.Sprintf("bot %s not found on %s", botName, nodeName))
+			return
+		}
+
+		main := d.ui.Panel("main")
+		theme := d.ui.Theme()
+		var sb strings.Builder
+		sb.WriteString(main.Styled(theme.Primary, "━━━ "+botName+"@"+nodeName+" ━━━") + "\n\n")
+		fmt.Fprintf(&sb, "  Goal:     %s\n", found.Goal)
+		fmt.Fprintf(&sb, "  Model:    %s\n", found.Model)
+		fmt.Fprintf(&sb, "  Thinking: %t\n", found.Thinking)
+		fmt.Fprintf(&sb, "  Status:   %s\n", found.Status)
+		if found.Ticks > 0 {
+			fmt.Fprintf(&sb, "  Ticks:    %d\n", found.Ticks)
+		}
+		fmt.Fprintf(&sb, "  Running:  %t\n", found.Running)
+		main.WriteString(sb.String())
+		return
+	}
+
+	b, err := d.mgr.Get(botName)
 	if err != nil {
-		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
+		d.showInfo(fmt.Sprintf("unknown bot: %s", botName))
 		return
 	}
 
@@ -1091,7 +1382,7 @@ func (d *Dashboard) cmdInfo(name string) {
 	theme := d.ui.Theme()
 
 	var sb strings.Builder
-	sb.WriteString(main.Styled(theme.Primary, "━━━ "+name+" ━━━") + "\n\n")
+	sb.WriteString(main.Styled(theme.Primary, "━━━ "+botName+" ━━━") + "\n\n")
 
 	fmt.Fprintf(&sb, "  Goal:     %s\n", cfg.Goal)
 	fmt.Fprintf(&sb, "  Model:    %s\n", cfg.Model)
@@ -1152,7 +1443,7 @@ func (d *Dashboard) cmdInfo(name string) {
 		fmt.Fprintf(&sb, "  Secret:    %s\n", maskSecret(cfg.GossipSecret))
 	}
 
-	if d.pool.IsRunning(name) {
+	if d.pool.IsRunning(botName) {
 		sb.WriteString("\n  " + main.Styled(theme.Primary, "Runner: active (in-process)") + "\n")
 	} else {
 		sb.WriteString("\n  " + main.Styled(theme.Dim, "Runner: idle") + "\n")
@@ -1163,14 +1454,16 @@ func (d *Dashboard) cmdInfo(name string) {
 
 func (d *Dashboard) cmdLogs(args string) {
 	var name string
+	var nodeName string
 	lines := 40
 	if args != "" {
 		parts := strings.Fields(args)
-		if len(parts) >= 1 {
-			name = parts[0]
-		}
-		if len(parts) >= 2 {
-			if n, err := strconv.Atoi(parts[1]); err == nil && n > 0 {
+		for _, p := range parts {
+			if strings.HasPrefix(p, "node=") {
+				nodeName = strings.TrimPrefix(p, "node=")
+			} else if name == "" {
+				name = p
+			} else if n, err := strconv.Atoi(p); err == nil && n > 0 {
 				lines = n
 			}
 		}
@@ -1178,12 +1471,30 @@ func (d *Dashboard) cmdLogs(args string) {
 	if name == "" {
 		d.mu.Lock()
 		name = d.selectedBot
+		nodeName = d.selectedNode
 		d.mu.Unlock()
 	}
 	if name == "" {
-		d.showInfo("usage: /logs [bot] [lines]")
+		d.showInfo("usage: /logs [bot] [lines] [node=<n>]")
 		return
 	}
+
+	if nodeName != "" && !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		d.ui.StartSpinner("fetching logs from " + nodeName)
+		content, err := d.node.FetchRemoteLogs(nodeName, name, lines)
+		d.ui.StopSpinner()
+		if err != nil {
+			d.showInfo(fmt.Sprintf("logs %s@%s: %v", name, nodeName, err))
+			return
+		}
+		d.ui.Panel("main").WriteString(content)
+		return
+	}
+
 	if _, err := d.mgr.Get(name); err != nil {
 		d.showInfo(fmt.Sprintf("unknown bot: %s", name))
 		return
@@ -1204,6 +1515,13 @@ func (d *Dashboard) cmdLogs(args string) {
 	d.ui.Panel("main").WriteString(sb.String())
 }
 
+func (d *Dashboard) isLocalNode(nodeName string) bool {
+	if d.node == nil {
+		return false
+	}
+	return nodeName == "" || nodeName == d.node.LocalNodeName()
+}
+
 func (d *Dashboard) cmdSpawn(args string) {
 	name, goal, opts := parseSpawnArgs(args)
 	if name == "" || goal == "" {
@@ -1218,11 +1536,21 @@ func (d *Dashboard) cmdSpawn(args string) {
 	if v, ok := opts["thinking"]; ok {
 		thinking = v != "false"
 	}
+	globalSecret := ""
+	if d.cfg != nil {
+		globalSecret = d.cfg.Watchdog.Secret
+	}
+	watchdogNode := ""
+	if d.node != nil {
+		watchdogNode = d.node.LocalNodeName()
+	}
 	cfg := &bot.BotConfig{
-		Name:     name,
-		Goal:     goal,
-		Model:    model,
-		Thinking: thinking,
+		Name:         name,
+		Goal:         goal,
+		Model:        model,
+		Thinking:     thinking,
+		GossipSecret: globalSecret,
+		WatchdogNode: watchdogNode,
 	}
 	if ws := opts["workspace"]; ws != "" {
 		wsPath, wsSecret, wsScope, err := d.resolveWorkspace(ws)
@@ -1288,6 +1616,48 @@ func (d *Dashboard) cmdNodes() {
 		return
 	}
 	d.showInfo("watchdog nodes: " + strings.Join(names, ", "))
+}
+
+func (d *Dashboard) cmdExpand(nodeName string) {
+	if nodeName == "" {
+		d.showInfo("usage: /expand <node>")
+		return
+	}
+	if d.node == nil {
+		d.showInfo("cluster not available")
+		return
+	}
+
+	d.ui.StartSpinner("fetching bots from " + nodeName)
+	bots, err := d.node.ListRemoteBots(nodeName)
+	d.ui.StopSpinner()
+	if err != nil {
+		d.showInfo(fmt.Sprintf("expand %s: %v", nodeName, err))
+		return
+	}
+
+	d.mu.Lock()
+	d.expandedNodes[nodeName] = true
+	d.remoteBots[nodeName] = bots
+	d.mu.Unlock()
+
+	d.refreshBotPanel()
+	d.showInfo(fmt.Sprintf("expanded %s (%d bots)", nodeName, len(bots)))
+}
+
+func (d *Dashboard) cmdCollapse(nodeName string) {
+	if nodeName == "" {
+		d.showInfo("usage: /collapse <node>")
+		return
+	}
+
+	d.mu.Lock()
+	delete(d.expandedNodes, nodeName)
+	delete(d.remoteBots, nodeName)
+	d.mu.Unlock()
+
+	d.refreshBotPanel()
+	d.showInfo("collapsed " + nodeName)
 }
 
 func (d *Dashboard) cmdExport(args string) {

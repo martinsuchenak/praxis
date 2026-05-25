@@ -160,7 +160,13 @@ func (n *Node) Start(ctx context.Context) error {
 	// Advertise node name so peers can target this node for remote spawn.
 	nodeName := n.cfg.NodeName
 	if nodeName == "" {
-		nodeName = n.cfg.AdvertiseAddr
+		hostname, _ := os.Hostname()
+		if hostname != "" {
+			nodeName = hostname
+		} else {
+			nodeName = n.cfg.AdvertiseAddr
+		}
+		n.cfg.NodeName = nodeName
 	}
 	n.cluster.LocalMetadata().SetString("node_name", nodeName)
 
@@ -192,6 +198,7 @@ func (n *Node) Start(ctx context.Context) error {
 	}()
 
 	go n.logClusterHealth(ctx)
+	go n.updateBotMetadata(ctx)
 
 	return nil
 }
@@ -207,6 +214,7 @@ func (n *Node) Stop() {
 func (n *Node) logClusterHealth(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	n.updateBotCounts()
 	for {
 		select {
 		case <-ctx.Done():
@@ -228,6 +236,26 @@ func (n *Node) logClusterHealth(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (n *Node) updateBotMetadata(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n.updateBotCounts()
+		}
+	}
+}
+
+func (n *Node) updateBotCounts() {
+	total, running := n.BotStats()
+	md := n.cluster.LocalMetadata()
+	md.SetString("bots_total", fmt.Sprintf("%d", total))
+	md.SetString("bots_running", fmt.Sprintf("%d", running))
 }
 
 // Cluster returns the underlying gossip.Cluster for event handler registration
@@ -304,6 +332,12 @@ func (n *Node) handleBotMsg(gn *gossip.Node, pkt *gossip.Packet) (interface{}, e
 		return n.handleTerminateReq(gn, pkt)
 	case TypeHardwareReq:
 		return n.handleHardwareReq(gn, pkt)
+	case TypeListBotsReq:
+		return n.handleListBotsReq(gn, pkt)
+	case TypeBotControlReq:
+		return n.handleBotControlReq(gn, pkt)
+	case TypeLogsReq:
+		return n.handleLogsReq(gn, pkt)
 	default:
 		n.log.Warn("bot_msg: unknown type", "type", hdr.Type)
 		return &ShellReply{Error: "unknown message type: " + hdr.Type, ExitCode: 1}, nil

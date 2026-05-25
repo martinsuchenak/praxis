@@ -24,16 +24,21 @@ func logsCmd() *cli.Command {
 		Arguments: []cli.Argument{
 			&cli.StringArg{Name: "bot", Usage: "Bot name", Required: true},
 		},
-		Flags: []cli.Flag{
+		Flags: append(remoteFlags(),
 			&cli.IntFlag{Name: "lines", Usage: "Number of lines", DefaultValue: 40},
-		},
+		),
 		Run: func(ctx context.Context, cmd *cli.Command) error {
 			app := appCtx(ctx)
 			id := cmd.GetStringArg("bot")
+			n := cmd.GetInt("lines")
+
+			if nodeName := cmd.GetString("node"); nodeName != "" {
+				return remoteLogs(ctx, cmd, id, n)
+			}
+
 			if _, err := app.Manager.Get(id); err != nil {
 				return err
 			}
-			n := cmd.GetInt("lines")
 			botDir := app.Manager.BotDir(id)
 			for _, logName := range []string{"bot.log", "output.log"} {
 				logPath := filepath.Join(botDir, logName)

@@ -32,7 +32,7 @@ Single Go binary (`main.go`) + embedded Python bot template (`lib/botcore.py`).
 |---|---|
 | `cmd/` | CLI commands. Each `*Cmd()` function returns a `*cli.Command`. Shared state via `AppContext` in context. |
 | `internal/bot/` | Bot config/state persistence (`config.go`, `state.go`), process runner via embedded scriptling (`runner.go`), bot manager (`manager.go`), export/import (`export.go`) |
-| `internal/cluster/` | Gossip cluster node. Message dispatcher routes by `type` field. Handlers: `proxy.go` (shell_req), `spawn.go` (spawn_req), `relay.go` (relay_req), `remote_spawn.go` (remote_spawn_req), `terminate.go` (terminate_req), `hardware.go` (hardware_req), `multicast.go` (auto-discovery) |
+| `internal/cluster/` | Gossip cluster node. Message dispatcher routes by `type` field. Handlers: `proxy.go` (shell_req), `spawn.go` (spawn_req), `relay.go` (relay_req), `remote_spawn.go` (remote_spawn_req), `terminate.go` (terminate_req), `hardware.go` (hardware_req), `remote_handlers.go` (list_bots_req, bot_control_req, logs_req), `multicast.go` (auto-discovery) |
 | `internal/config/` | TOML config loading, env overrides, workspace/model resolution. `config.go` defines all structs (`Config`, `WatchdogConfig`, `BotDefaults`, `WorkspaceEntry`, `ModelEntry`). `Get()` returns the global config. `Load(projectDir)` reads `~/.config/praxis/config.toml` + `praxis.toml`, applies env overrides. |
 | `internal/sandbox/` | Shell command sandboxing (bwrap or none). Interface in `sandbox.go`. |
 | `internal/hooks/` | Lifecycle hook dispatcher. `Fire()` runs configured command/HTTP hooks for an event. |
@@ -114,14 +114,53 @@ The `schedule_action` tool stores reminders in `_reminders` in bot state, keyed 
 
 ## TUI: Tab Completion
 
-Commands that take a bot name (`/start`, `/stop`, `/kill`, `/restart`, `/refresh`) support Tab completion — bot names are auto-populated from the current bot list and updated when the bot panel refreshes.
+Commands that take a bot name (`/start`, `/stop`, `/kill`, `/restart`, `/refresh`) support Tab completion — bot names are auto-populated from the current bot list and `node=<name>` entries from remote watchdog peers, updated when the bot panel refreshes.
 
 ## Conventions
 
 - No comments in Go code unless explicitly requested.
 - Message types are dispatched by `type` string field in `internal/cluster/cluster.go:handleBotMsg`. New message types need: constant in `messages.go`, struct pair (Request/Reply), handler method, case in dispatcher.
 - CLI flags use `--kebab-case`. Env vars use `UPPER_SNAKE_CASE`.
-- Gossip metadata keys: `role` (watchdog/bot), `id` (bot name or "operator"), `node_name` (watchdog node name).
+- Gossip metadata keys: `role` (watchdog/bot), `id` (bot name or "operator"), `node_name` (watchdog node name), `bots_total`, `bots_running` (periodic bot count metadata).
+
+## Remote Bot Management
+
+Watchdogs can manage bots on remote nodes via gossip. Three admin message types (`list_bots_req`, `bot_control_req`, `logs_req`) are dispatched by the same `handleBotMsg` dispatcher.
+
+### Architecture
+
+- `internal/cluster/remote_handlers.go` — `handleListBotsReq`, `handleBotControlReq`, `handleLogsReq`. All use `validAdminSecret()` (GlobalSecret only, NOT bot-level GossipSecret).
+- `internal/cluster/remote_client.go` — `ListRemoteBots()`, `ControlRemoteBot()`, `FetchRemoteLogs()`, `BotStats()`. Used by TUI for remote operations.
+- `internal/cluster/secrets.go` — `validAdminSecret()` requires GlobalSecret; `validSecret()` also accepts bot-level GossipSecret.
+- `cmd/helpers.go` — `remoteFlags()`, `remoteControlBot()`, `remoteListBots()`, `remoteLogs()`, `remoteControlAll()`, `joinCluster()`, `findWatchdogPeer()`. Creates temporary gossip connection for CLI remote operations.
+- Bot counts (`bots_total`, `bots_running`) are published in gossip metadata every 2s via `updateBotMetadata()` goroutine.
+
+### Bot Control Actions
+
+`bot_control_req` supports: `start`, `stop`, `kill`, `restart`, `refresh` (template update), `remove` (delete bot directory).
+
+### CLI Remote Operations
+
+All bot CLI commands accept `--node <name>` and `--seeds <addrs>` flags. When `--node` is set, the command creates a temporary gossip connection to reach the cluster. Also supported on `start-all`, `stop-all`, `kill-all`.
+
+### TUI Remote Operations
+
+All TUI bot commands accept `node=<name>` parameter. The left panel renders a collapsible node tree with `/expand <node>` and `/collapse <node>`. Remote bot logs fetched via `FetchRemoteLogs()`. Bot counts shown in detail panel and node tree.
+
+### Node Name Resolution
+
+If `node_name` is not configured, it auto-generates from `os.Hostname()`, falling back to the advertise address. `findWatchdogNode()` matches by `node_name` metadata, with address fallback.
+
+## Bot Watchdog Affinity
+
+Each bot has a `WatchdogNode` field in `BotConfig` set at spawn time to the owning watchdog's node name. The bot's `_find_watchdog()` in `botcore.py` prefers this node, falling back to any watchdog. This is stamped at:
+
+- TUI `/spawn` — from `d.node.LocalNodeName()`
+- Remote spawn handler — from `n.cfg.NodeName`
+- Watchdog/TUI startup — stamps existing bots with empty `WatchdogNode` via `UpdateConfig()`
+- Monitor goroutine — stamps bots before first start
+
+Bots also get `GossipSecret` defaulted to `GlobalSecret` at spawn time so they can authenticate with the watchdog even without a workspace-specific secret.
 
 ## Tailscale (tsnet)
 

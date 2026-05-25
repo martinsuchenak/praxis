@@ -70,7 +70,11 @@ func tuiCmd() *cli.Command {
 			}
 
 			if bots, err := app.Manager.List(); err == nil {
+				nodeName := node.LocalNodeName()
 				for _, b := range bots {
+					if b.Config.WatchdogNode == "" {
+						_ = app.Manager.UpdateConfig(b.Config.Name, map[string]string{"watchdog_node": nodeName})
+					}
 					switch b.State.Status {
 					case bot.StatusCreated, bot.StatusRunning, bot.StatusStarting:
 						_ = pool.Start(b.Config.Name)
@@ -78,7 +82,7 @@ func tuiCmd() *cli.Command {
 				}
 			}
 
-			go monitorBotStates(runCtx, app.Manager, pool, log)
+			go monitorBotStates(runCtx, app.Manager, pool, node.LocalNodeName(), log)
 
 			dashboard := tui.New(app.Manager, pool, node, sb, log, cfg)
 			if err := dashboard.Run(runCtx); err != nil {

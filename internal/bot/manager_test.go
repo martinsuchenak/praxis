@@ -55,6 +55,36 @@ func TestUpdateConfigBotNotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigWatchdogNode(t *testing.T) {
+	m, root := newTestManager(t)
+	testutil.TempBot(t, root, "wnbot", &bot.BotConfig{Name: "wnbot", Goal: "g", Model: "m"})
+
+	if err := m.UpdateConfig("wnbot", map[string]string{"watchdog_node": "node-1"}); err != nil {
+		t.Fatalf("UpdateConfig watchdog_node: %v", err)
+	}
+
+	loaded, err := bot.LoadConfig(m.BotDir("wnbot"))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.WatchdogNode != "node-1" {
+		t.Errorf("WatchdogNode: got %q, want %q", loaded.WatchdogNode, "node-1")
+	}
+}
+
+func TestConfigDictIncludesWatchdogNode(t *testing.T) {
+	cfg := &bot.BotConfig{
+		Name:         "b1",
+		Goal:         "g",
+		Model:        "m",
+		WatchdogNode: "my-node",
+	}
+	d := cfg.AsDict()
+	if d["watchdog_node"] != "my-node" {
+		t.Errorf("watchdog_node in dict = %v, want %q", d["watchdog_node"], "my-node")
+	}
+}
+
 func TestRefreshTemplate(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.TemplateBytes = []byte("original")

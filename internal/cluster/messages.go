@@ -15,6 +15,9 @@ const (
 	TypeRemoteSpawnReq = "remote_spawn_req"
 	TypeTerminateReq   = "terminate_req"
 	TypeHardwareReq    = "hardware_req"
+	TypeListBotsReq    = "list_bots_req"
+	TypeBotControlReq  = "bot_control_req"
+	TypeLogsReq        = "logs_req"
 )
 
 // botRequest is the discriminator header — only "type" is decoded first.
@@ -102,4 +105,50 @@ type HardwareRequest struct {
 type HardwareReply struct {
 	Value interface{} `msgpack:"value"`
 	Error string      `msgpack:"error,omitempty"`
+}
+
+type ListBotsRequest struct {
+	Type   string `msgpack:"type"`
+	Secret string `msgpack:"_secret"`
+}
+
+type BotEntry struct {
+	Name     string `msgpack:"name"`
+	Status   string `msgpack:"status"`
+	Model    string `msgpack:"model"`
+	Goal     string `msgpack:"goal"`
+	Thinking bool   `msgpack:"thinking"`
+	Running  bool   `msgpack:"running"`
+	Ticks    int64  `msgpack:"ticks"`
+}
+
+type ListBotsReply struct {
+	Bots  []BotEntry `msgpack:"bots"`
+	Error string     `msgpack:"error,omitempty"`
+}
+
+type BotControlRequest struct {
+	Type   string `msgpack:"type"`
+	BotID  string `msgpack:"bot_id"`
+	Action string `msgpack:"action"`
+	Secret string `msgpack:"_secret"`
+}
+
+type BotControlReply struct {
+	Status string `msgpack:"status,omitempty"`
+	Error  string `msgpack:"error,omitempty"`
+}
+
+type LogsRequest struct {
+	Type   string `msgpack:"type"`
+	BotID  string `msgpack:"bot_id"`
+	Lines  int    `msgpack:"lines"`
+	Offset int64  `msgpack:"offset,omitempty"`
+	Secret string `msgpack:"_secret"`
+}
+
+type LogsReply struct {
+	Content string `msgpack:"content"`
+	Offset  int64  `msgpack:"offset"`
+	Error   string `msgpack:"error,omitempty"`
 }

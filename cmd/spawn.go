@@ -45,23 +45,24 @@ func spawnCmd() *cli.Command {
 				model = defaultModel()
 			}
 
-			cfg := &bot.BotConfig{
-				Name:     name,
-				Goal:     goal,
-				Model:    model,
-				Thinking: !cmd.GetBool("no-thinking"),
-				Brain:    cmd.GetString("brain"),
-				Scope:    cmd.GetString("scope"),
-				Parent:   cmd.GetString("parent"),
-			}
+		cfg := &bot.BotConfig{
+			Name:              name,
+			Goal:              goal,
+			Model:             model,
+			Thinking:          !cmd.GetBool("no-thinking"),
+			Brain:             cmd.GetString("brain"),
+			Scope:             cmd.GetString("scope"),
+			Parent:            cmd.GetString("parent"),
+			GossipSecret:      defaultGlobalSecret(),
+		}
 
-			if ws := cmd.GetString("workspace"); ws != "" {
-				wsPath, wsSecret, wsDefaultScope := resolveWorkspace(app.Dir, ws)
-				cfg.Workspace = ws
-				cfg.WorkspacePath = wsPath
-				if wsSecret != "" {
-					cfg.GossipSecret = wsSecret
-				}
+		if ws := cmd.GetString("workspace"); ws != "" {
+			wsPath, wsSecret, wsDefaultScope := resolveWorkspace(app.Dir, ws)
+			cfg.Workspace = ws
+			cfg.WorkspacePath = wsPath
+			if wsSecret != "" {
+				cfg.GossipSecret = wsSecret
+			}
 				if cfg.Scope == "" && wsDefaultScope != "" {
 					cfg.Scope = wsDefaultScope
 				}

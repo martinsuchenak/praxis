@@ -14,9 +14,19 @@ func removeCmd() *cli.Command {
 		Arguments: []cli.Argument{
 			&cli.StringArg{Name: "bot", Usage: "Bot name", Required: true},
 		},
+		Flags: remoteFlags(),
 		Run: func(ctx context.Context, cmd *cli.Command) error {
-			app := appCtx(ctx)
 			id := cmd.GetStringArg("bot")
+
+			if nodeName := cmd.GetString("node"); nodeName != "" {
+				if err := remoteControlBot(ctx, cmd, id, "remove"); err != nil {
+					return err
+				}
+				fmt.Printf("removed %s on %s\n", id, nodeName)
+				return nil
+			}
+
+			app := appCtx(ctx)
 			if _, err := app.Manager.Get(id); err != nil {
 				return err
 			}

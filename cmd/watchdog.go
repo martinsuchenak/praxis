@@ -80,7 +80,11 @@ func watchdogCmd() *cli.Command {
 			)
 
 			if bots, err := app.Manager.List(); err == nil {
+				nodeName := node.LocalNodeName()
 				for _, b := range bots {
+					if b.Config.WatchdogNode == "" {
+						_ = app.Manager.UpdateConfig(b.Config.Name, map[string]string{"watchdog_node": nodeName})
+					}
 					switch b.State.Status {
 					case bot.StatusCreated, bot.StatusRunning, bot.StatusStarting:
 						if startErr := pool.Start(b.Config.Name); startErr != nil {
@@ -92,7 +96,7 @@ func watchdogCmd() *cli.Command {
 				}
 			}
 
-			go monitorBotStates(runCtx, app.Manager, pool, log)
+			go monitorBotStates(runCtx, app.Manager, pool, node.LocalNodeName(), log)
 
 			quit := make(chan os.Signal, 1)
 			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -111,7 +115,7 @@ func watchdogCmd() *cli.Command {
 	}
 }
 
-func monitorBotStates(ctx context.Context, mgr *bot.Manager, pool *bot.RunnerPool, log interface {
+func monitorBotStates(ctx context.Context, mgr *bot.Manager, pool *bot.RunnerPool, nodeName string, log interface {
 	Info(string, ...interface{})
 	Error(string, ...interface{})
 }) {
@@ -132,6 +136,9 @@ func monitorBotStates(ctx context.Context, mgr *bot.Manager, pool *bot.RunnerPoo
 				switch b.State.Status {
 				case bot.StatusCreated:
 					if !pool.IsRunning(name) {
+						if b.Config.WatchdogNode == "" {
+							_ = mgr.UpdateConfig(name, map[string]string{"watchdog_node": nodeName})
+						}
 						if err := pool.Start(name); err != nil {
 							log.Error("monitor: start failed", "bot", name, "err", err)
 						} else {
