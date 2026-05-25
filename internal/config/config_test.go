@@ -422,8 +422,12 @@ func TestClusterAddrs(t *testing.T) {
 	if cfg.ClusterBindAddr() != "0.0.0.0:7700" {
 		t.Errorf("bind = %q", cfg.ClusterBindAddr())
 	}
-	if cfg.ClusterAdvertiseAddr() != "0.0.0.0:7700" {
-		t.Errorf("advertise = %q", cfg.ClusterAdvertiseAddr())
+	adv := cfg.ClusterAdvertiseAddr()
+	if adv == "0.0.0.0:7700" {
+		t.Errorf("advertise should auto-detect LAN IP, got %q", adv)
+	}
+	if adv == "" {
+		t.Error("advertise should not be empty")
 	}
 
 	cfg.Watchdog.Advertise = "1.2.3.4:7700"

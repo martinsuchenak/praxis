@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -363,7 +364,37 @@ func (c *Config) ClusterAdvertiseAddr() string {
 	if c.Watchdog.Advertise != "" {
 		return c.Watchdog.Advertise
 	}
+	ip := detectLANIP()
+	if ip != "" {
+		return ip + ":" + c.Watchdog.Port
+	}
 	return c.ClusterBindAddr()
+}
+
+func detectLANIP() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, i := range ifaces {
+		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := i.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipNet, ok := a.(*net.IPNet)
+			if !ok || ipNet.IP.IsLoopback() || ipNet.IP.IsLinkLocalUnicast() {
+				continue
+			}
+			if v4 := ipNet.IP.To4(); v4 != nil {
+				return v4.String()
+			}
+		}
+	}
+	return ""
 }
 
 func (c *Config) TsnetDirOrDefault(projectDir string) string {

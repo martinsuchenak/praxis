@@ -28,8 +28,9 @@ type discoverer struct {
 	advAddr string
 	log     logger.Logger
 
-	mu     sync.Mutex
-	joined bool
+	mu       sync.Mutex
+	joined   bool
+	known    map[string]bool
 }
 
 func defaultMulticastConfig() multicastConfig {
@@ -54,7 +55,10 @@ func (d *discoverer) run(ctx context.Context, joinFunc func(addrs []string) erro
 
 	pconn := ipv4.NewPacketConn(conn)
 
-	intf, err := multicastInterface()
+	intf, err := func() (*net.Interface, error) {
+		host, _, _ := net.SplitHostPort(d.advAddr)
+		return multicastInterfaceFor(host)
+	}()
 	if err != nil {
 		d.log.Warn("multicast: no suitable interface", "err", err)
 		return
@@ -81,12 +85,7 @@ func (d *discoverer) run(ctx context.Context, joinFunc func(addrs []string) erro
 		case <-ctx.Done():
 			return
 		case <-announceTicker.C:
-			d.mu.Lock()
-			shouldAnnounce := !d.joined
-			d.mu.Unlock()
-			if shouldAnnounce {
-				d.sendAnnounce(conn, groupAddr)
-			}
+			d.sendAnnounce(conn, groupAddr)
 		default:
 		}
 
@@ -114,20 +113,30 @@ func (d *discoverer) run(ctx context.Context, joinFunc func(addrs []string) erro
 			continue
 		}
 
+		d.mu.Lock()
+		if d.known == nil {
+			d.known = make(map[string]bool)
+		}
+		if d.known[peerAddr] {
+			d.mu.Unlock()
+			continue
+		}
+		d.known[peerAddr] = true
+		needJoin := !d.joined
+		if needJoin {
+			d.joined = true
+		}
+		d.mu.Unlock()
+
 		d.log.Info("multicast: discovered peer", "addr", peerAddr)
 
-		d.mu.Lock()
-		if !d.joined {
-			d.joined = true
-			d.mu.Unlock()
+		if needJoin {
 			if err := joinFunc([]string{peerAddr}); err != nil {
 				d.log.Warn("multicast: join failed", "addr", peerAddr, "err", err)
 				d.mu.Lock()
 				d.joined = false
 				d.mu.Unlock()
 			}
-		} else {
-			d.mu.Unlock()
 		}
 	}
 }
@@ -158,10 +167,38 @@ func handleDiscoverMsg(msg map[string]interface{}, selfAddr string) string {
 }
 
 func multicastInterface() (*net.Interface, error) {
+	return multicastInterfaceFor("")
+}
+
+func multicastInterfaceFor(targetIP string) (*net.Interface, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
+
+	if targetIP != "" {
+		if ip := net.ParseIP(targetIP); ip != nil {
+			for _, i := range ifaces {
+				if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagMulticast == 0 || i.Flags&net.FlagLoopback != 0 {
+					continue
+				}
+				addrs, err := i.Addrs()
+				if err != nil || len(addrs) == 0 {
+					continue
+				}
+				for _, a := range addrs {
+					_, ipNet, err := net.ParseCIDR(a.String())
+					if err != nil {
+						continue
+					}
+					if ipNet.Contains(ip) {
+						return &i, nil
+					}
+				}
+			}
+		}
+	}
+
 	for _, i := range ifaces {
 		if i.Flags&net.FlagUp == 0 || i.Flags&net.FlagMulticast == 0 || i.Flags&net.FlagLoopback != 0 {
 			continue
