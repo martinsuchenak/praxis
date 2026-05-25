@@ -7,9 +7,11 @@ workspaces.json
 
 # Go build outputs
 bin/
+dist/
 *.test
 coverage.out
 coverage.html
 .task/
 models/
 praxis.toml
+.vscode/settings.json

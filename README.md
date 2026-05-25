@@ -6,6 +6,23 @@ Autonomous, self-evolving bots powered by LLMs. Each bot is a single self-contai
 
 > **Disclaimer:** This project is under constant development. Changes are frequently not backward-compatible. Bots can cause real damage — to files, services, or anything they have access to. Do not run in any environment where such risk is not acceptable. The author is not responsible for any damage caused.
 
+## Installation
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap martinsuchenak/tap
+brew install praxis
+```
+
+### From Source
+
+```bash
+task build
+```
+
+Or download a binary from the [latest release](https://github.com/martinsuchenak/praxis/releases/latest).
+
 ## Quick Start
 
 ```bash
