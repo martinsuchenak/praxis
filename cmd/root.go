@@ -29,15 +29,18 @@ func appCtx(ctx context.Context) *AppContext {
 }
 
 var botcoreTemplate []byte
+var appVersion string
 
 func SetBotcoreTemplate(b []byte) { botcoreTemplate = b }
+
+func SetVersion(v string) { appVersion = v }
 
 func Root() *cli.Command {
 	var dir string
 
 	return &cli.Command{
 		Name:        "praxis",
-		Version:     "0.1.0",
+		Version:     appVersion,
 		Usage:       "Praxis bot swarm controller",
 		Description: "Manages a swarm of autonomous scriptling bots.",
 		Flags: []cli.Flag{

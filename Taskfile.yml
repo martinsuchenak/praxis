@@ -4,7 +4,9 @@ vars:
   BINARY: praxis
   BIN_DIR: bin
   MAIN_PKG: .
-  BUILD_FLAGS: -ldflags="-s -w"
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  BUILD_FLAGS: -ldflags="-s -w -X main.version={{.VERSION}}"
   TEST_FLAGS: -timeout 120s
   INTEGRATION_TAG: integration
 
@@ -34,6 +36,15 @@ tasks:
     cmds:
       - mkdir -p {{.BIN_DIR}}
       - go build -o {{.BIN_DIR}}/{{.BINARY}}-debug {{.MAIN_PKG}}
+
+  build:cross:
+    desc: 'Cross-compile for a specific OS/arch (usage: task build:cross -- GOOS=linux GOARCH=amd64)'
+    vars:
+      GOOS: '{{default "linux" .GOOS}}'
+      GOARCH: '{{default "amd64" .GOARCH}}'
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - GOOS={{.GOOS}} GOARCH={{.GOARCH}} go build {{.BUILD_FLAGS}} -o {{.BIN_DIR}}/{{.BINARY}}-{{.GOOS}}-{{.GOARCH}} {{.MAIN_PKG}}
 
   build:all:
     desc: Cross-compile for linux/amd64 and linux/arm64

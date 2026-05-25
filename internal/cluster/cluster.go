@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/paularlott/gossip"
 	"github.com/paularlott/gossip/codec"
@@ -165,9 +166,12 @@ func (n *Node) Start(ctx context.Context) error {
 
 	// Join seed peers if provided.
 	if len(n.cfg.Seeds) > 0 {
+		n.log.Info("joining seed peers", "count", len(n.cfg.Seeds), "seeds", n.cfg.Seeds)
 		if err := n.cluster.Join(n.cfg.Seeds); err != nil {
 			n.log.Warn("could not join seed peers", "err", err)
 		}
+		alive := n.cluster.AliveNodes()
+		n.log.Info("seed join complete", "alive_peers", len(alive))
 	} else {
 		mcCfg := multicastConfig{
 			Group: n.cfg.MulticastAddr,
@@ -187,6 +191,8 @@ func (n *Node) Start(ctx context.Context) error {
 		n.cluster.Stop()
 	}()
 
+	go n.logClusterHealth(ctx)
+
 	return nil
 }
 
@@ -195,6 +201,32 @@ func (n *Node) Stop() {
 	n.cluster.Stop()
 	if n.tsnetSrv != nil {
 		_ = n.tsnetSrv.Close()
+	}
+}
+
+func (n *Node) logClusterHealth(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			alive := n.cluster.AliveNodes()
+			var names []string
+		for _, nd := range alive {
+			nn := nd.Metadata.GetString("node_name")
+			if nn == "" {
+				nn = nd.AdvertisedAddr()
+			}
+			names = append(names, nn)
+		}
+			if len(alive) == 0 {
+				n.log.Warn("cluster has no alive peers")
+			} else {
+				n.log.Info("cluster health", "alive_peers", len(alive), "peers", names)
+			}
+		}
 	}
 }
 
