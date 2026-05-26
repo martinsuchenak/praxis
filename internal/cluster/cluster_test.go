@@ -1271,7 +1271,7 @@ func TestHandleBotControlReqRemove(t *testing.T) {
 	if reply.Status != "removed" {
 		t.Errorf("status = %q, want removed", reply.Status)
 	}
-	if _, err := os.Stat(filepath.Join(root, "Bots", "bot1")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "bots", "bot1")); !os.IsNotExist(err) {
 		t.Error("expected bot directory to be removed")
 	}
 }
@@ -1417,8 +1417,12 @@ func TestHandleBotControlReqBulkStart(t *testing.T) {
 	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "g1", Model: "m"})
 	testutil.TempBot(t, root, "bot2", &bot.BotConfig{Name: "bot2", Goal: "g2", Model: "m"})
 	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
-	n.manager.SetStatus("bot1", bot.StatusStopped)
-	n.manager.SetStatus("bot2", bot.StatusStopped)
+	if err := n.manager.SetStatus("bot1", bot.StatusStopped); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.manager.SetStatus("bot2", bot.StatusStopped); err != nil {
+		t.Fatal(err)
+	}
 
 	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
 		Type:   TypeBotControlReq,
@@ -1439,8 +1443,12 @@ func TestHandleBotControlReqBulkStop(t *testing.T) {
 	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "g1", Model: "m"})
 	testutil.TempBot(t, root, "bot2", &bot.BotConfig{Name: "bot2", Goal: "g2", Model: "m"})
 	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
-	n.manager.SetStatus("bot1", bot.StatusRunning)
-	n.manager.SetStatus("bot2", bot.StatusStopped)
+	if err := n.manager.SetStatus("bot1", bot.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.manager.SetStatus("bot2", bot.StatusStopped); err != nil {
+		t.Fatal(err)
+	}
 
 	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
 		Type:   TypeBotControlReq,
@@ -1497,9 +1505,13 @@ func TestHandleLogsReqSuccess(t *testing.T) {
 	root := testutil.TempProject(t)
 	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test", Model: "m"})
 
-	logDir := filepath.Join(root, "Bots", "bot1")
-	os.WriteFile(filepath.Join(logDir, "bot.log"), []byte("line1\nline2\n"), 0644)
-	os.WriteFile(filepath.Join(logDir, "output.log"), []byte("out1\n"), 0644)
+	logDir := filepath.Join(root, "bots", "bot1")
+	if err := os.WriteFile(filepath.Join(logDir, "bot.log"), []byte("line1\nline2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "output.log"), []byte("out1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
 
@@ -1584,7 +1596,9 @@ func TestHandleLogsReqMissingBotID(t *testing.T) {
 func TestHandleLogsReqDefaultLines(t *testing.T) {
 	root := testutil.TempProject(t)
 	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test", Model: "m"})
-	os.WriteFile(filepath.Join(root, "Bots", "bot1", "bot.log"), []byte("x\n"), 0644)
+	if err := os.WriteFile(filepath.Join(root, "bots", "bot1", "bot.log"), []byte("x\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
 

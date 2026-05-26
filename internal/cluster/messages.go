@@ -135,9 +135,10 @@ type BotControlRequest struct {
 }
 
 type BotControlReply struct {
-	Status string `msgpack:"status,omitempty"`
-	Count  int    `msgpack:"count,omitempty"`
-	Error  string `msgpack:"error,omitempty"`
+	Status string   `msgpack:"status,omitempty"`
+	Count  int      `msgpack:"count,omitempty"`
+	Failed []string `msgpack:"failed,omitempty"`
+	Error  string   `msgpack:"error,omitempty"`
 }
 
 type LogsRequest struct {

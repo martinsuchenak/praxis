@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"math"
@@ -1566,7 +1565,7 @@ func (d *Dashboard) cmdLogs(args string) {
 	for _, logName := range []string{"bot.log", "output.log"} {
 		logPath := filepath.Join(botDir, logName)
 		fmt.Fprintf(&sb, "--- %s (last %d lines) ---\n", logName, lines)
-		data, err := readLastN(logPath, lines)
+		data, err := bot.ReadLastNLines(logPath, lines)
 		if err != nil {
 			sb.WriteString("(empty)\n")
 		} else {
@@ -2686,30 +2685,6 @@ func staleThreshold() time.Duration {
 		n = cfg.Bot.StaleThreshold
 	}
 	return time.Duration(n) * time.Second
-}
-
-func readLastN(path string, n int) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-		if len(lines) > n*2 {
-			lines = lines[len(lines)-n:]
-		}
-	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	if len(lines) == 0 {
-		return "", fmt.Errorf("empty")
-	}
-	return strings.Join(lines, "\n") + "\n", scanner.Err()
 }
 
 func parseSpawnArgs(args string) (name, goal string, opts map[string]string) {

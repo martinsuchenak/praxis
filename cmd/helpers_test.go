@@ -32,24 +32,22 @@ func TestParseCSVFlag(t *testing.T) {
 }
 
 func TestResolveWorkspaceMissingFile(t *testing.T) {
-	dir := t.TempDir()
 	cfg := &config.Config{}
 	config.Set(cfg)
-	p, s, sc := resolveWorkspace(dir, "myapp")
+	p, s, sc := resolveWorkspace("myapp")
 	if p != "" || s != "" || sc != "" {
 		t.Errorf("expected empty, got path=%q secret=%q scope=%q", p, s, sc)
 	}
 }
 
 func TestResolveWorkspaceNotFound(t *testing.T) {
-	dir := t.TempDir()
 	cfg := &config.Config{
 		Workspaces: []config.WorkspaceEntry{
 			{Name: "other", Path: "/path"},
 		},
 	}
 	config.Set(cfg)
-	p, _, _ := resolveWorkspace(dir, "myapp")
+	p, _, _ := resolveWorkspace("myapp")
 	if p != "" {
 		t.Error("expected empty for missing workspace name")
 	}
@@ -62,7 +60,7 @@ func TestResolveWorkspaceEntry(t *testing.T) {
 		},
 	}
 	config.Set(cfg)
-	p, s, sc := resolveWorkspace("", "myapp")
+	p, s, sc := resolveWorkspace("myapp")
 	if p != "/home/user/projects/myapp" {
 		t.Errorf("path = %q", p)
 	}
@@ -81,7 +79,7 @@ func TestResolveWorkspaceWithSecretAndScope(t *testing.T) {
 		},
 	}
 	config.Set(cfg)
-	p, s, sc := resolveWorkspace("", "myapp")
+	p, s, sc := resolveWorkspace("myapp")
 	if p != "/home/user/projects/myapp" {
 		t.Errorf("path = %q", p)
 	}
@@ -100,7 +98,7 @@ func TestResolveWorkspacePartialEntry(t *testing.T) {
 		},
 	}
 	config.Set(cfg)
-	p, s, sc := resolveWorkspace("", "minimal")
+	p, s, sc := resolveWorkspace("minimal")
 	if p != "/tmp/min" {
 		t.Errorf("path = %q", p)
 	}

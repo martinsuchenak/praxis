@@ -123,7 +123,7 @@ func (n *Node) handleRemoteSpawnReq(_ *gossip.Node, pkt *gossip.Packet) (interfa
 		return spawnError("bad request: " + err.Error()), nil
 	}
 
-	if !n.validSecret("", req.Secret) {
+	if !n.validAdminSecret(req.Secret) {
 		n.log.Warn("remote_spawn_req: invalid secret")
 		return spawnError("invalid secret"), nil
 	}

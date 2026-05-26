@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -103,6 +102,7 @@ func (n *Node) handleBulkControl(req *BotControlRequest) (*BotControlReply, erro
 	}
 
 	acted := 0
+	var failed []string
 	for _, b := range bots {
 		switch req.Action {
 		case "start":
@@ -110,6 +110,7 @@ func (n *Node) handleBulkControl(req *BotControlRequest) (*BotControlReply, erro
 				continue
 			}
 			if err := n.manager.SetStatus(b.Config.Name, bot.StatusCreated); err != nil {
+				failed = append(failed, b.Config.Name)
 				continue
 			}
 		case "stop":
@@ -117,10 +118,12 @@ func (n *Node) handleBulkControl(req *BotControlRequest) (*BotControlReply, erro
 				continue
 			}
 			if err := n.manager.SetStatus(b.Config.Name, bot.StatusStopping); err != nil {
+				failed = append(failed, b.Config.Name)
 				continue
 			}
 		case "kill":
 			if err := n.manager.SetStatus(b.Config.Name, bot.StatusKilled); err != nil {
+				failed = append(failed, b.Config.Name)
 				continue
 			}
 		default:
@@ -129,7 +132,7 @@ func (n *Node) handleBulkControl(req *BotControlRequest) (*BotControlReply, erro
 		acted++
 	}
 
-	return &BotControlReply{Status: req.Action + "-all", Count: acted}, nil
+	return &BotControlReply{Status: req.Action + "-all", Count: acted, Failed: failed}, nil
 }
 
 func (n *Node) handleLogsReq(_ *gossip.Node, pkt *gossip.Packet) (interface{}, error) {
@@ -158,11 +161,11 @@ func (n *Node) handleLogsReq(_ *gossip.Node, pkt *gossip.Packet) (interface{}, e
 	var sb strings.Builder
 	for _, logName := range []string{"bot.log", "output.log"} {
 		logPath := filepath.Join(botDir, logName)
-		data, err := readLastNFromPath(logPath, req.Lines)
+		data, err := bot.ReadLastNLines(logPath, req.Lines)
 		if err != nil {
-			sb.WriteString(fmt.Sprintf("--- %s (empty) ---\n", logName))
+			fmt.Fprintf(&sb, "--- %s (empty) ---\n", logName)
 		} else {
-			sb.WriteString(fmt.Sprintf("--- %s (last %d lines) ---\n", logName, req.Lines))
+			fmt.Fprintf(&sb, "--- %s (last %d lines) ---\n", logName, req.Lines)
 			sb.WriteString(data)
 		}
 	}
@@ -180,29 +183,4 @@ func (n *Node) isBotRunning(name string) bool {
 		}
 	}
 	return false
-}
-
-func readLastNFromPath(path string, n int) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-		if len(lines) > n*2 {
-			lines = lines[len(lines)-n:]
-		}
-	}
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	if len(lines) == 0 {
-		return "", fmt.Errorf("empty")
-	}
-	return strings.Join(lines, "\n") + "\n", scanner.Err()
 }

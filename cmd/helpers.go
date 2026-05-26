@@ -46,7 +46,7 @@ func parseCSVFlag(val string) []string {
 	return out
 }
 
-func resolveWorkspace(projectDir, name string) (path, gossipSecret, defaultScope string) {
+func resolveWorkspace(name string) (path, gossipSecret, defaultScope string) {
 	cfg := config.Get()
 	if cfg != nil {
 		p, s, sc, ok := cfg.ResolveWorkspace(name)
@@ -144,50 +144,20 @@ func remoteControlAll(ctx context.Context, cmd *cli.Command, action string) (int
 		return 0, err
 	}
 
-	listReq := map[string]interface{}{
-		"type":    cluster.TypeListBotsReq,
+	req := map[string]interface{}{
+		"type":    cluster.TypeBotControlReq,
+		"bot_id":  "",
+		"action":  action,
 		"_secret": secret,
 	}
-	var listReply cluster.ListBotsReply
-	if err := gc.SendToWithResponse(target, gossip.UserMsg, listReq, &listReply); err != nil {
-		return 0, fmt.Errorf("list bots: %w", err)
+	var reply cluster.BotControlReply
+	if err := gc.SendToWithResponse(target, gossip.UserMsg, req, &reply); err != nil {
+		return 0, fmt.Errorf("bulk control: %w", err)
 	}
-	if listReply.Error != "" {
-		return 0, fmt.Errorf("list bots: %s", listReply.Error)
+	if reply.Error != "" {
+		return 0, fmt.Errorf("bulk control: %s", reply.Error)
 	}
-
-	acted := 0
-	for _, b := range listReply.Bots {
-		switch action {
-		case "start":
-			if b.Status == "running" || b.Status == "starting" {
-				continue
-			}
-		case "stop":
-			if b.Status != "running" {
-				continue
-			}
-		case "kill":
-		case "remove":
-		}
-		req := map[string]interface{}{
-			"type":    cluster.TypeBotControlReq,
-			"bot_id":  b.Name,
-			"action":  action,
-			"_secret": secret,
-		}
-		var reply cluster.BotControlReply
-		if err := gc.SendToWithResponse(target, gossip.UserMsg, req, &reply); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s: error: %v\n", b.Name, err)
-			continue
-		}
-		if reply.Error != "" {
-			fmt.Fprintf(os.Stderr, "  %s: %s\n", b.Name, reply.Error)
-			continue
-		}
-		acted++
-	}
-	return acted, nil
+	return reply.Count, nil
 }
 
 func remoteListBots(ctx context.Context, cmd *cli.Command) error {
@@ -289,10 +259,11 @@ func remoteLogs(ctx context.Context, cmd *cli.Command, botID string, lines int) 
 func joinCluster(ctx context.Context, seeds []string) (*gossip.Cluster, error) {
 	port := 50000 + rand.N(10000)
 	bindAddr := fmt.Sprintf("0.0.0.0:%d", port)
+	advertiseAddr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	gcfg := gossip.DefaultConfig()
 	gcfg.BindAddr = bindAddr
-	gcfg.AdvertiseAddr = bindAddr
+	gcfg.AdvertiseAddr = advertiseAddr
 	gcfg.MsgCodec = codec.NewVmihailencoMsgpackCodec()
 	gcfg.Transport = gossip.NewSocketTransport(gcfg)
 

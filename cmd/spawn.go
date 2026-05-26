@@ -57,7 +57,7 @@ func spawnCmd() *cli.Command {
 			}
 
 			if ws := cmd.GetString("workspace"); ws != "" {
-				wsPath, wsSecret, wsDefaultScope := resolveWorkspace(app.Dir, ws)
+				wsPath, wsSecret, wsDefaultScope := resolveWorkspace(ws)
 				cfg.Workspace = ws
 				cfg.WorkspacePath = wsPath
 				if wsSecret != "" {

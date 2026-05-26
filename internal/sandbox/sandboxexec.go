@@ -80,25 +80,29 @@ func resolvePath(p string) string {
 	return p
 }
 
+func sanitizeSBPLPath(p string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(p, `\`, `\\`), `"`, `\"`)
+}
+
 func buildSeatbeltProfile(botDir, workspacePath string) string {
 	botDir = resolvePath(botDir)
 	botsDir := filepath.Dir(botDir)
 	locksDir := filepath.Join(filepath.Dir(botsDir), ".locks")
 
 	var writePaths []string
-	writePaths = append(writePaths, "(subpath \""+botDir+"\")")
+	writePaths = append(writePaths, "(subpath \""+sanitizeSBPLPath(botDir)+"\")")
 	if _, err := os.Stat(botsDir); err == nil {
-		writePaths = append(writePaths, "(subpath \""+botsDir+"\")")
+		writePaths = append(writePaths, "(subpath \""+sanitizeSBPLPath(botsDir)+"\")")
 	}
 	if _, err := os.Stat(locksDir); err == nil {
-		writePaths = append(writePaths, "(subpath \""+locksDir+"\")")
+		writePaths = append(writePaths, "(subpath \""+sanitizeSBPLPath(locksDir)+"\")")
 	}
 	writePaths = append(writePaths, "(subpath \"/private/tmp\")")
 	writePaths = append(writePaths, "(subpath \"/var\")")
 	if workspacePath != "" {
 		wp := resolvePath(workspacePath)
 		if _, err := os.Stat(wp); err == nil {
-			writePaths = append(writePaths, "(subpath \""+wp+"\")")
+			writePaths = append(writePaths, "(subpath \""+sanitizeSBPLPath(wp)+"\")")
 		}
 	}
 
@@ -108,6 +112,8 @@ func buildSeatbeltProfile(botDir, workspacePath string) string {
 		"(allow process-fork)" +
 		"(allow file-read*)" +
 		"(allow file-write* " + strings.Join(writePaths, " ") + ")" +
+		// network* is intentionally unrestricted — bots must reach external LLM APIs.
+		// This sandbox provides filesystem containment only.
 		"(allow network*)" +
 		"(allow signal)" +
 		"(allow sysctl-read)"

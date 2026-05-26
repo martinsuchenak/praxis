@@ -38,7 +38,9 @@ func TestSandboxExecExecuteEcho(t *testing.T) {
 
 	tmp := t.TempDir()
 	botDir := filepath.Join(tmp, "Bots", "testbot")
-	os.MkdirAll(botDir, 0755)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := sb.Execute(t.Context(), ExecOptions{
 		Command: "echo hello",
@@ -63,7 +65,9 @@ func TestSandboxExecExecuteNonZero(t *testing.T) {
 
 	tmp := t.TempDir()
 	botDir := filepath.Join(tmp, "Bots", "testbot")
-	os.MkdirAll(botDir, 0755)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := sb.Execute(t.Context(), ExecOptions{
 		Command: "exit 42",
@@ -85,7 +89,9 @@ func TestSandboxExecExecuteWriteAllowed(t *testing.T) {
 
 	tmp := t.TempDir()
 	botDir := filepath.Join(tmp, "Bots", "testbot")
-	os.MkdirAll(botDir, 0755)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := sb.Execute(t.Context(), ExecOptions{
 		Command: "touch testfile && echo ok",
@@ -110,7 +116,9 @@ func TestSandboxExecExecuteWriteDenied(t *testing.T) {
 
 	tmp := t.TempDir()
 	botDir := filepath.Join(tmp, "Bots", "testbot")
-	os.MkdirAll(botDir, 0755)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := sb.Execute(t.Context(), ExecOptions{
 		Command: "touch /sandbox_test_write_denied && echo ok",
@@ -132,7 +140,9 @@ func TestSandboxExecTimeout(t *testing.T) {
 
 	tmp := t.TempDir()
 	botDir := filepath.Join(tmp, "Bots", "testbot")
-	os.MkdirAll(botDir, 0755)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := sb.Execute(t.Context(), ExecOptions{
 		Command: "sleep 60",
@@ -153,9 +163,13 @@ func TestSandboxExecTimeout(t *testing.T) {
 func TestBuildSeatbeltProfile(t *testing.T) {
 	tmp := t.TempDir()
 	botDir := filepath.Join(tmp, "Bots", "testbot")
-	os.MkdirAll(botDir, 0755)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	wsPath := filepath.Join(tmp, "ws")
-	os.MkdirAll(wsPath, 0755)
+	if err := os.MkdirAll(wsPath, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	profile := buildSeatbeltProfile(botDir, wsPath)
 
@@ -185,7 +199,9 @@ func TestBuildSeatbeltProfile(t *testing.T) {
 func TestBuildSeatbeltProfileNoWorkspace(t *testing.T) {
 	tmp := t.TempDir()
 	botDir := filepath.Join(tmp, "Bots", "testbot")
-	os.MkdirAll(botDir, 0755)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	profile := buildSeatbeltProfile(botDir, "")
 	if strings.Contains(profile, "workspace") {
 		t.Error("profile should not mention workspace when empty")
@@ -195,9 +211,13 @@ func TestBuildSeatbeltProfileNoWorkspace(t *testing.T) {
 func TestBuildSeatbeltProfileWithWorkspace(t *testing.T) {
 	tmp := t.TempDir()
 	wsPath := filepath.Join(tmp, "ws")
-	os.MkdirAll(wsPath, 0755)
+	if err := os.MkdirAll(wsPath, 0755); err != nil {
+		t.Fatal(err)
+	}
 	botDir := filepath.Join(tmp, "Bots", "testbot")
-	os.MkdirAll(botDir, 0755)
+	if err := os.MkdirAll(botDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	profile := buildSeatbeltProfile(botDir, wsPath)
 	if !strings.Contains(profile, wsPath) {
 		t.Errorf("profile missing workspace path %q", wsPath)
