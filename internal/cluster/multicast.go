@@ -28,9 +28,9 @@ type discoverer struct {
 	advAddr string
 	log     logger.Logger
 
-	mu       sync.Mutex
-	joined   bool
-	known    map[string]bool
+	mu     sync.Mutex
+	joined bool
+	known  map[string]bool
 }
 
 func defaultMulticastConfig() multicastConfig {

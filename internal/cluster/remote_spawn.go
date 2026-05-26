@@ -70,9 +70,9 @@ func (n *Node) findWatchdogNode(nodeName string) *gossip.Node {
 }
 
 type WatchdogPeer struct {
-	Name      string
-	Addr      string
-	BotsTotal int
+	Name        string
+	Addr        string
+	BotsTotal   int
 	BotsRunning int
 }
 
@@ -92,9 +92,9 @@ func (n *Node) WatchdogPeers() []WatchdogPeer {
 		total, _ := strconv.Atoi(gn.Metadata.GetString("bots_total"))
 		running, _ := strconv.Atoi(gn.Metadata.GetString("bots_running"))
 		peers = append(peers, WatchdogPeer{
-			Name:       name,
-			Addr:       gn.AdvertisedAddr(),
-			BotsTotal:  total,
+			Name:        name,
+			Addr:        gn.AdvertisedAddr(),
+			BotsTotal:   total,
 			BotsRunning: running,
 		})
 	}

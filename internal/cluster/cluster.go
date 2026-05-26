@@ -222,13 +222,13 @@ func (n *Node) logClusterHealth(ctx context.Context) {
 		case <-ticker.C:
 			alive := n.cluster.AliveNodes()
 			var names []string
-		for _, nd := range alive {
-			nn := nd.Metadata.GetString("node_name")
-			if nn == "" {
-				nn = nd.AdvertisedAddr()
+			for _, nd := range alive {
+				nn := nd.Metadata.GetString("node_name")
+				if nn == "" {
+					nn = nd.AdvertisedAddr()
+				}
+				names = append(names, nn)
 			}
-			names = append(names, nn)
-		}
 			if len(alive) == 0 {
 				n.log.Warn("cluster has no alive peers")
 			} else {

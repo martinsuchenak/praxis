@@ -36,18 +36,18 @@ type Dashboard struct {
 	log  logger.Logger
 	cfg  *config.Config
 
-	mu          sync.Mutex
-	selectedBot string
+	mu           sync.Mutex
+	selectedBot  string
 	selectedNode string
-	logCancel   context.CancelFunc
-	logOffset   int64
-	vizActive   bool
+	logCancel    context.CancelFunc
+	logOffset    int64
+	vizActive    bool
 
 	expandedNodes map[string]bool
 	remoteBots    map[string][]cluster.BotEntry
 
-	botNameCmds   []*gotui.Command
-	bulkNodeCmds  []*gotui.Command
+	botNameCmds  []*gotui.Command
+	bulkNodeCmds []*gotui.Command
 
 	quitMu      sync.Mutex
 	quitPending bool
@@ -500,9 +500,9 @@ func (d *Dashboard) refreshDetailPanel() {
 		}
 
 		type nodeInfo struct {
-			Name       string
-			Address    string
-			BotsTotal  int
+			Name        string
+			Address     string
+			BotsTotal   int
 			BotsRunning int
 		}
 		var nodes []nodeInfo
