@@ -55,7 +55,7 @@ func (n *Node) handleBotControlReq(_ *gossip.Node, pkt *gossip.Packet) (interfac
 	}
 
 	if req.BotID == "" {
-		return &BotControlReply{Error: "bot_id is required"}, nil
+		return n.handleBulkControl(&req)
 	}
 
 	switch req.Action {
@@ -94,6 +94,42 @@ func (n *Node) handleBotControlReq(_ *gossip.Node, pkt *gossip.Packet) (interfac
 	default:
 		return &BotControlReply{Error: "unknown action: " + req.Action}, nil
 	}
+}
+
+func (n *Node) handleBulkControl(req *BotControlRequest) (*BotControlReply, error) {
+	bots, err := n.manager.List()
+	if err != nil {
+		return &BotControlReply{Error: "list bots: " + err.Error()}, nil
+	}
+
+	acted := 0
+	for _, b := range bots {
+		switch req.Action {
+		case "start":
+			if b.State.Status == bot.StatusRunning || b.State.Status == bot.StatusStarting {
+				continue
+			}
+			if err := n.manager.SetStatus(b.Config.Name, bot.StatusCreated); err != nil {
+				continue
+			}
+		case "stop":
+			if b.State.Status != bot.StatusRunning && b.State.Status != bot.StatusStarting {
+				continue
+			}
+			if err := n.manager.SetStatus(b.Config.Name, bot.StatusStopping); err != nil {
+				continue
+			}
+		case "kill":
+			if err := n.manager.SetStatus(b.Config.Name, bot.StatusKilled); err != nil {
+				continue
+			}
+		default:
+			return &BotControlReply{Error: "unsupported bulk action: " + req.Action}, nil
+		}
+		acted++
+	}
+
+	return &BotControlReply{Status: req.Action + "-all", Count: acted}, nil
 }
 
 func (n *Node) handleLogsReq(_ *gossip.Node, pkt *gossip.Packet) (interface{}, error) {

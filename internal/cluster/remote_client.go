@@ -50,6 +50,28 @@ func (n *Node) ControlRemoteBot(nodeName, botID, action string) error {
 	return nil
 }
 
+func (n *Node) ControlRemoteBotAll(nodeName, action string) (int, error) {
+	target := n.findWatchdogNode(nodeName)
+	if target == nil {
+		return 0, fmt.Errorf("node %q not found", nodeName)
+	}
+
+	req := map[string]interface{}{
+		"type":    TypeBotControlReq,
+		"action":  action,
+		"_secret": n.cfg.GlobalSecret,
+	}
+
+	var reply BotControlReply
+	if err := n.cluster.SendToWithResponse(target, MsgBotToWatchdog, req, &reply); err != nil {
+		return 0, fmt.Errorf("control bot: %w", err)
+	}
+	if reply.Error != "" {
+		return 0, fmt.Errorf("control bot: %s", reply.Error)
+	}
+	return reply.Count, nil
+}
+
 func (n *Node) FetchRemoteLogs(nodeName, botID string, lines int) (string, error) {
 	target := n.findWatchdogNode(nodeName)
 	if target == nil {

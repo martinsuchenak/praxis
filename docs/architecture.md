@@ -11,7 +11,7 @@ praxis/
     bot/                Bot manager: spawn, start, stop, state, runner pool
     cluster/            Gossip node, message dispatcher, shell/spawn/relay handlers
     config/             TOML config loading, env overrides, workspace resolution
-    sandbox/            bwrap sandbox wrapper
+    sandbox/            Shell command sandboxing (bwrap or sandbox-exec)
     tui/                Terminal UI dashboard
   bots/                 One directory per bot (runtime-created, git-ignored)
   .locks/               Per-model concurrency slots (runtime-created, git-ignored)
@@ -51,7 +51,7 @@ Three complementary layers:
 
 1. **scriptling `--allowed-paths`** — restricts file access to the bot's own directory, `bots/`, and `.locks/`. Enforced by the runtime, not bypassable via source edits.
 2. **subprocess disabled** — bots cannot escape the file sandbox via process launch.
-3. **bwrap sandbox** — shell commands run on the watchdog with the bot's directory as `/`, system directories read-only, and `/tmp` writable. Set `BOT_SHELL_SANDBOX=none` to disable.
+3. **shell command sandbox** — shell commands run on the watchdog in a sandbox. On Linux, bwrap is used with the bot's directory as `/`, system directories read-only, and `/tmp` writable. On macOS, `sandbox-exec` (Seatbelt) is used with write access restricted to the bot directory, bots dir, locks dir, `/tmp`, and `/var`. Set `BOT_SHELL_SANDBOX=none` to disable.
 
 The workspace directory is an explicit exception: added to `--allowed-paths` and mounted in bwrap at the real host path.
 
@@ -78,6 +78,19 @@ Secrets (`api_key`, `gossip_secret`) are never injected into the bot's CONFIG di
 - **Consensus in background** — the LLM call for `consensus_req` runs in a `runtime.background()` goroutine and shares results back via a named `Queue` (30 s max). The gossip goroutine is never blocked indefinitely.
 - **Spawn limiting** — each bot can create at most 10 children.
 - **File index** — `entities/.index.md` is rebuilt on every write/delete/replace and shown in the tick message so the bot sees its knowledge at a glance.
+
+## Remote Bot Management
+
+Watchdogs can manage bots on remote nodes via gossip. Three admin message types (`list_bots_req`, `bot_control_req`, `logs_req`) allow the TUI and CLI to operate on any node in the cluster.
+
+- `internal/cluster/remote_handlers.go` — handlers for admin requests. All use `validAdminSecret()` which requires the GlobalSecret (NOT bot-level GossipSecret) — this prevents bots from invoking admin commands.
+- `internal/cluster/remote_client.go` — client methods used by TUI/CLI for remote operations.
+- Bot control actions: `start`, `stop`, `kill`, `restart`, `refresh`, `remove`.
+- Periodic bot count metadata (`bots_total`, `bots_running`) is published by each watchdog every 2s.
+
+### Bot Watchdog Affinity
+
+Each bot has a `WatchdogNode` field in its config, set at spawn time to the owning watchdog's node name. The bot's `_find_watchdog()` in `botcore.py` prefers this node but falls back to any watchdog. Affinity is stamped at spawn (TUI, CLI, remote spawn) and on startup for existing bots missing the field.
 
 ## Gossip Wire Protocol
 

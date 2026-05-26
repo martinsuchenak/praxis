@@ -74,6 +74,18 @@ praxis restart <name>   # kill + start
 praxis remove  <name>   # kill + delete bot directory entirely
 ```
 
+All lifecycle commands accept remote operation flags:
+
+| Flag | Description |
+|---|---|
+| `--node <name>` | Operate on a remote watchdog node by name |
+| `--seeds <addrs>` | Comma-separated gossip seed addresses (required with `--node`) |
+
+```bash
+praxis start Worker --node node-2 --seeds 10.0.0.2:7700
+praxis kill Worker --node node-2 --seeds 10.0.0.2:7700
+```
+
 ### Bulk operations
 
 ```bash
@@ -81,6 +93,14 @@ praxis start-all       # start all stopped bots
 praxis stop-all        # graceful stop all running bots
 praxis kill-all        # SIGTERM all bots
 praxis restart-stale   # restart all bots flagged STALE
+```
+
+Bulk commands also accept `--node` and `--seeds` for remote operation. In the TUI, they accept `node=<name>`:
+
+```
+/start-all node=node-2
+/stop-all node=node-2
+/kill-all node=node-2
 ```
 
 ## Inspection
@@ -108,6 +128,7 @@ Print recent lines from a bot's `bot.log`:
 ```bash
 praxis logs <name>          # last 40 lines
 praxis logs <name> --lines 100
+praxis logs <name> --node node-2 --seeds 10.0.0.2:7700   # remote bot logs
 ```
 
 ### tail
@@ -172,7 +193,7 @@ Flags (defaults come from `praxis.toml`, env vars override):
 | `--advertise` | `BOT_WATCHDOG_ADDR` | Gossip advertise address |
 | `--seeds` | `BOT_SEED_ADDRS` | Comma-separated seed peer addresses |
 | `--secret` | `BOT_GLOBAL_SECRET` | Global gossip secret |
-| `--sandbox` | `BOT_SHELL_SANDBOX` | Sandbox mode: `auto\|bwrap\|none` |
+| `--sandbox` | `BOT_SHELL_SANDBOX` | Sandbox mode: `auto\|bwrap\|sandbox-exec\|none` |
 | `--mounts` | `BOT_SHELL_MOUNTS` | Extra sandbox mounts |
 | `--node-name` | `BOT_NODE_NAME` | Human-readable node name |
 | `--multicast-addr` | `BOT_MULTICAST_ADDR` | Multicast group for auto-discovery |
@@ -184,11 +205,12 @@ Flags (defaults come from `praxis.toml`, env vars override):
 
 The watchdog joins the gossip cluster as `role=watchdog`. It:
 - Monitors bot processes and auto-restarts crashed bots
-- Proxies `shell` commands from bots (enforces allowlist + bwrap sandbox)
+- Proxies `shell` commands from bots (enforces allowlist + sandbox)
 - Relays cross-workspace messages for gateway-scoped bots
 - Handles `spawn` requests sent by bots via gossip
 - Handles `terminate` requests from bots requesting self-termination
 - Handles `remote_spawn_req` from other watchdogs for cross-node spawning
+- Handles admin requests (`list_bots_req`, `bot_control_req`, `logs_req`) for remote bot management
 
 When `--seeds` is not provided, the watchdog auto-discovers peers on the local network via multicast.
 
@@ -218,6 +240,23 @@ Slash commands available in the TUI:
 | `/refresh [bot]` | Update bot.py from current template (restart to apply) |
 | `/refresh-all` | Update all bots bot.py from current template |
 | `/remove <bot>` | Kill and permanently delete a bot (removes locks + directory) |
+
+All bot lifecycle TUI commands accept `node=<name>` to operate on a remote watchdog:
+
+```
+/start Worker node=node-2
+/kill Worker node=node-2
+/logs Worker node=node-2
+```
+
+### Node Tree
+
+The left panel renders a collapsible node tree showing local and remote watchdogs with their bots. Expand/collapse nodes to see remote bots.
+
+| Command | Description |
+|---|---|
+| `/expand <node>` | Expand a remote node in the tree to show its bots |
+| `/collapse <node>` | Collapse a remote node |
 
 ### Cluster
 

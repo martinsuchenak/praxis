@@ -77,6 +77,9 @@ func TestNewModeAutoFallsBackToNone(t *testing.T) {
 	if _, err := exec.LookPath("bwrap"); err == nil {
 		t.Skip("bwrap is installed; auto would pick bwrap")
 	}
+	if _, err := exec.LookPath("sandbox-exec"); err == nil {
+		t.Skip("sandbox-exec is installed; auto would pick sandbox-exec")
+	}
 	sb, warn, err := New(Config{Mode: ModeAuto})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

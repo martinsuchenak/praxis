@@ -41,7 +41,7 @@ tick_max_iterations = 5
 | `advertise` | `0.0.0.0:<port>` | `BOT_WATCHDOG_ADDR` | Gossip advertise address |
 | `seeds` | `[]` | `BOT_SEED_ADDRS` | Gossip seed peers (comma-separated in env) |
 | `secret` | `""` | `BOT_GLOBAL_SECRET` | Global gossip auth secret |
-| `sandbox` | `"auto"` | `BOT_SHELL_SANDBOX` | Sandbox mode: `auto`, `bwrap`, `none` |
+| `sandbox` | `"auto"` | `BOT_SHELL_SANDBOX` | Sandbox mode: `auto`, `bwrap`, `sandbox-exec`, `none`. `auto` uses `sandbox-exec` on macOS, `bwrap` on Linux, `none` otherwise |
 | `mounts` | `""` | `BOT_SHELL_MOUNTS` | Extra bwrap mounts |
 | `allowlist` | `[]` | `BOT_SHELL_ALLOWLIST` | Shell command allowlist |
 | `auth_disabled` | `false` | `BOT_AUTH_DISABLED` | Disable secret validation (dev mode) |

@@ -1363,14 +1363,18 @@ func TestHandleBotControlReqMissingBotID(t *testing.T) {
 
 	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
 		Type:   TypeBotControlReq,
+		Action: "start",
 		Secret: "s3cret",
 	}))
 	reply, ok := resp.(*BotControlReply)
 	if !ok {
 		t.Fatalf("expected BotControlReply, got %T", resp)
 	}
-	if reply.Error != "bot_id is required" {
-		t.Errorf("error = %q, want bot_id is required", reply.Error)
+	if reply.Error != "" {
+		t.Errorf("error = %q, want empty (bulk mode)", reply.Error)
+	}
+	if reply.Count != 0 {
+		t.Errorf("count = %d, want 0 (no bots)", reply.Count)
 	}
 }
 
@@ -1405,6 +1409,85 @@ func TestHandleBotControlReqBadUnmarshal(t *testing.T) {
 	}
 	if reply.Error == "" {
 		t.Error("expected error for bad payload")
+	}
+}
+
+func TestHandleBotControlReqBulkStart(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "g1", Model: "m"})
+	testutil.TempBot(t, root, "bot2", &bot.BotConfig{Name: "bot2", Goal: "g2", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+	n.manager.SetStatus("bot1", bot.StatusStopped)
+	n.manager.SetStatus("bot2", bot.StatusStopped)
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		Action: "start",
+		Secret: "s3cret",
+	}))
+	reply := resp.(*BotControlReply)
+	if reply.Error != "" {
+		t.Fatalf("error = %q", reply.Error)
+	}
+	if reply.Count != 2 {
+		t.Errorf("count = %d, want 2", reply.Count)
+	}
+}
+
+func TestHandleBotControlReqBulkStop(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "g1", Model: "m"})
+	testutil.TempBot(t, root, "bot2", &bot.BotConfig{Name: "bot2", Goal: "g2", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+	n.manager.SetStatus("bot1", bot.StatusRunning)
+	n.manager.SetStatus("bot2", bot.StatusStopped)
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		Action: "stop",
+		Secret: "s3cret",
+	}))
+	reply := resp.(*BotControlReply)
+	if reply.Error != "" {
+		t.Fatalf("error = %q", reply.Error)
+	}
+	if reply.Count != 1 {
+		t.Errorf("count = %d, want 1", reply.Count)
+	}
+}
+
+func TestHandleBotControlReqBulkKill(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "g1", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		Action: "kill",
+		Secret: "s3cret",
+	}))
+	reply := resp.(*BotControlReply)
+	if reply.Error != "" {
+		t.Fatalf("error = %q", reply.Error)
+	}
+	if reply.Count != 1 {
+		t.Errorf("count = %d, want 1", reply.Count)
+	}
+}
+
+func TestHandleBotControlReqBulkUnsupportedAction(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "g1", Model: "m"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleBotControlReq(nil, testPacket(t, BotControlRequest{
+		Type:   TypeBotControlReq,
+		Action: "refresh",
+		Secret: "s3cret",
+	}))
+	reply := resp.(*BotControlReply)
+	if reply.Error == "" {
+		t.Error("expected error for unsupported bulk action")
 	}
 }
 

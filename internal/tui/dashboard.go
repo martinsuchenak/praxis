@@ -46,7 +46,8 @@ type Dashboard struct {
 	expandedNodes map[string]bool
 	remoteBots    map[string][]cluster.BotEntry
 
-	botNameCmds []*gotui.Command
+	botNameCmds   []*gotui.Command
+	bulkNodeCmds  []*gotui.Command
 
 	quitMu      sync.Mutex
 	quitPending bool
@@ -70,6 +71,13 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 	copy(themeArgs, themeNames)
 
 	var botNameCmds []*gotui.Command
+	var bulkNodeCmds []*gotui.Command
+
+	bulkCmd := func(name, desc string, handler func(string), list *[]*gotui.Command) *gotui.Command {
+		cmd := &gotui.Command{Name: name, Description: desc, Handler: handler}
+		*list = append(*list, cmd)
+		return cmd
+	}
 
 	d.ui = gotui.New(gotui.Config{
 		Theme:          gotui.ThemeDefault,
@@ -87,11 +95,11 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 			botCmd("logs", "Show recent log lines [bot] [lines] [node=<n>]", func(args string) { d.cmdLogs(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "top", Description: "Scroll log panel to top", Handler: func(_ string) { d.ui.Panel("main").ScrollToTop() }},
 			botCmd("start", "Start a bot [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [node=<n>] [msg]", func(args string) { d.cmdStartWithMessage(strings.TrimSpace(args)) }, &botNameCmds),
-			{Name: "start-all", Description: "Start all stopped bots", Handler: func(_ string) { d.cmdStartAll() }},
+			bulkCmd("start-all", "Start all stopped bots [node=<n>]", func(args string) { d.cmdStartAll(strings.TrimSpace(args)) }, &bulkNodeCmds),
 			botCmd("stop", "Stop a bot gracefully [bot] [node=<n>]", func(args string) { d.cmdStop(strings.TrimSpace(args)) }, &botNameCmds),
-			{Name: "stop-all", Description: "Stop all running bots", Handler: func(_ string) { d.cmdStopAll() }},
+			bulkCmd("stop-all", "Stop all running bots [node=<n>]", func(args string) { d.cmdStopAll(strings.TrimSpace(args)) }, &bulkNodeCmds),
 			botCmd("kill", "Kill a bot immediately [bot] [node=<n>]", func(args string) { d.cmdKill(strings.TrimSpace(args)) }, &botNameCmds),
-			{Name: "kill-all", Description: "Kill all running bots", Handler: func(_ string) { d.cmdKillAll() }},
+			bulkCmd("kill-all", "Kill all running bots [node=<n>]", func(args string) { d.cmdKillAll(strings.TrimSpace(args)) }, &bulkNodeCmds),
 			botCmd("restart", "Kill and restart a bot [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [node=<n>] [msg]", func(args string) { d.cmdRestartWithConfig(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "restart-stale", Description: "Restart all stale bots", Handler: func(_ string) { d.cmdRestartStale() }},
 			botCmd("refresh", "Update bot.py from current template [bot] [node=<n>]", func(args string) { d.cmdRefresh(strings.TrimSpace(args)) }, &botNameCmds),
@@ -111,6 +119,7 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 	})
 
 	d.botNameCmds = botNameCmds
+	d.bulkNodeCmds = bulkNodeCmds
 
 	accent := gotui.ThemeDefault.Primary
 	d.botPanel = d.ui.CreatePanel(gotui.PanelConfig{
@@ -990,9 +999,29 @@ func (d *Dashboard) refreshBotNameArgs() {
 		args = append(args, nodeArgs...)
 		cmd.Args = args
 	}
+
+	for _, cmd := range d.bulkNodeCmds {
+		cmd.Args = nodeArgs
+	}
 }
 
-func (d *Dashboard) cmdStartAll() {
+func (d *Dashboard) cmdStartAll(args string) {
+	_, kvArgs := parseKeyValueArgs(args)
+	nodeName := kvArgs["node"]
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		acted, err := d.node.ControlRemoteBotAll(nodeName, "start")
+		if err != nil {
+			d.showInfo(fmt.Sprintf("start-all on %s: %v", nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("started=%d on %s", acted, nodeName))
+		return
+	}
+
 	bots, err := d.mgr.List()
 	if err != nil {
 		d.showInfo(fmt.Sprintf("error: %v", err))
@@ -1039,7 +1068,23 @@ func (d *Dashboard) cmdStop(name string) {
 	d.showInfo(fmt.Sprintf("stopping %s", name))
 }
 
-func (d *Dashboard) cmdStopAll() {
+func (d *Dashboard) cmdStopAll(args string) {
+	_, kvArgs := parseKeyValueArgs(args)
+	nodeName := kvArgs["node"]
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		acted, err := d.node.ControlRemoteBotAll(nodeName, "stop")
+		if err != nil {
+			d.showInfo(fmt.Sprintf("stop-all on %s: %v", nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("stopping %d bots on %s", acted, nodeName))
+		return
+	}
+
 	bots, err := d.mgr.List()
 	if err != nil {
 		d.showInfo(fmt.Sprintf("error: %v", err))
@@ -1136,7 +1181,23 @@ func (d *Dashboard) cmdKill(name string) {
 	d.showInfo(fmt.Sprintf("killed %s", name))
 }
 
-func (d *Dashboard) cmdKillAll() {
+func (d *Dashboard) cmdKillAll(args string) {
+	_, kvArgs := parseKeyValueArgs(args)
+	nodeName := kvArgs["node"]
+	if !d.isLocalNode(nodeName) {
+		if d.node == nil {
+			d.showInfo("cluster not available")
+			return
+		}
+		acted, err := d.node.ControlRemoteBotAll(nodeName, "kill")
+		if err != nil {
+			d.showInfo(fmt.Sprintf("kill-all on %s: %v", nodeName, err))
+			return
+		}
+		d.showInfo(fmt.Sprintf("killed %d bots on %s", acted, nodeName))
+		return
+	}
+
 	bots, err := d.mgr.List()
 	if err != nil {
 		d.showInfo(fmt.Sprintf("error: %v", err))

@@ -49,6 +49,9 @@ All inter-bot messages are sent via `gossip.send_to()`. Request/reply patterns u
 | `remote_spawn_req` | request/reply | Watchdog → watchdog remote spawn — creates a bot on the target node |
 | `terminate_req` | request/reply | Bot → watchdog self-termination request — reply: `{"status": "terminated"}` or `{"error": ...}` |
 | `hardware_req` | request/reply | Bot requests the watchdog to route a command to a hardware device node. Fields: node, peripheral, affordance, operation, input. |
+| `list_bots_req` | request/reply | Watchdog → watchdog: list bots on a remote node. Requires GlobalSecret (admin-only). |
+| `bot_control_req` | request/reply | Watchdog → watchdog: control a bot on a remote node (start/stop/kill/restart/refresh/remove). Requires GlobalSecret. |
+| `logs_req` | request/reply | Watchdog → watchdog: fetch recent log lines from a bot on a remote node. Requires GlobalSecret. |
 
 ## Communication Scope
 
@@ -81,6 +84,56 @@ Leader-specific behaviour can be added to bot brains (e.g. coordination tasks, h
 Set `BOT_GLOBAL_SECRET` (or `gossip_secret` per workspace in `workspaces.json`) to authenticate inter-bot messages. All messages include `_secret` in the payload; unauthenticated messages are dropped.
 
 Bots on different machines need the same secret in their `.env`.
+
+### Admin vs Bot Authentication
+
+Two authentication functions exist:
+
+- `validSecret(botID, secret)` — accepts bot's own `GossipSecret` OR `GlobalSecret`. Used for bot-initiated requests (shell, spawn, terminate).
+- `validAdminSecret(secret)` — accepts `GlobalSecret` ONLY. Used for admin requests (list_bots, bot_control, logs). This prevents bots from using their own GossipSecret to invoke admin commands on remote nodes.
+
+Bot `GossipSecret` defaults to `GlobalSecret` at spawn time, ensuring bots can authenticate with the watchdog even without a workspace-specific secret.
+
+## Remote Bot Management
+
+Watchdogs can manage bots on other nodes in the cluster via gossip. Both the CLI and TUI support remote operations.
+
+### CLI Remote Operations
+
+All bot lifecycle commands accept `--node <name>` and `--seeds <addrs>`:
+
+```bash
+praxis start Worker --node node-2 --seeds 10.0.0.2:7700
+praxis kill Worker --node node-2 --seeds 10.0.0.2:7700
+praxis logs Worker --node node-2 --seeds 10.0.0.2:7700
+praxis list --node node-2 --seeds 10.0.0.2:7700
+```
+
+When `--node` is set, the command creates a temporary gossip connection to the cluster and routes the request to the specified watchdog. Bulk commands (`start-all`, `stop-all`, `kill-all`) also support remote operation.
+
+### TUI Remote Operations
+
+All TUI bot commands accept `node=<name>` parameter:
+
+```
+/start Worker node=node-2
+/kill Worker node=node-2
+/logs Worker node=node-2
+```
+
+The left panel renders a collapsible node tree. Use `/expand <node>` and `/collapse <node>` to show/hide remote bots. Tab completion includes `node=<name>` entries for all watchdog peers.
+
+### Node Name Resolution
+
+Each watchdog has a `node_name` (configured via `--node-name` or auto-generated from `os.Hostname()`). Remote operations match by `node_name` metadata, with advertise address as fallback. Bot counts (`bots_total`, `bots_running`) are published in gossip metadata every 2s.
+
+## Watchdog Affinity
+
+Each bot has a `WatchdogNode` field in its config, stamped at spawn time to the owning watchdog's node name. The bot's `_find_watchdog()` prefers its own node but falls back to any available watchdog. Affinity is set:
+
+- At spawn (TUI, CLI, remote spawn handler)
+- On startup for existing bots missing the field
+- By the monitor goroutine before first start
 
 ## Tailscale (tsnet)
 

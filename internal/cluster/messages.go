@@ -136,6 +136,7 @@ type BotControlRequest struct {
 
 type BotControlReply struct {
 	Status string `msgpack:"status,omitempty"`
+	Count  int    `msgpack:"count,omitempty"`
 	Error  string `msgpack:"error,omitempty"`
 }
 

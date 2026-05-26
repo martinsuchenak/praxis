@@ -34,7 +34,7 @@ Single Go binary (`main.go`) + embedded Python bot template (`lib/botcore.py`).
 | `internal/bot/` | Bot config/state persistence (`config.go`, `state.go`), process runner via embedded scriptling (`runner.go`), bot manager (`manager.go`), export/import (`export.go`) |
 | `internal/cluster/` | Gossip cluster node. Message dispatcher routes by `type` field. Handlers: `proxy.go` (shell_req), `spawn.go` (spawn_req), `relay.go` (relay_req), `remote_spawn.go` (remote_spawn_req), `terminate.go` (terminate_req), `hardware.go` (hardware_req), `remote_handlers.go` (list_bots_req, bot_control_req, logs_req), `multicast.go` (auto-discovery) |
 | `internal/config/` | TOML config loading, env overrides, workspace/model resolution. `config.go` defines all structs (`Config`, `WatchdogConfig`, `BotDefaults`, `WorkspaceEntry`, `ModelEntry`). `Get()` returns the global config. `Load(projectDir)` reads `~/.config/praxis/config.toml` + `praxis.toml`, applies env overrides. |
-| `internal/sandbox/` | Shell command sandboxing (bwrap or none). Interface in `sandbox.go`. |
+| `internal/sandbox/` | Shell command sandboxing (bwrap on Linux, sandbox-exec on macOS, or none). Interface in `sandbox.go`. `factory.go` auto-selects by platform. |
 | `internal/hooks/` | Lifecycle hook dispatcher. `Fire()` runs configured command/HTTP hooks for an event. |
 | `internal/tui/` | Terminal UI dashboard (`dashboard.go`). All `/` commands are methods on `Dashboard`. |
 | `internal/testutil/` | `MockSandbox`, `TempProject()`, `TempBot()` — use these in tests. |
