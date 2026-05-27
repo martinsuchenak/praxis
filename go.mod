@@ -4,13 +4,13 @@ go 1.26.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/martinsuchenak/scriptling-llm-lib v0.0.4
+	github.com/martinsuchenak/scriptling-llm-lib v0.0.6
 	github.com/paularlott/cli v0.8.4
-	github.com/paularlott/gossip v0.12.5
+	github.com/paularlott/gossip v0.12.6
 	github.com/paularlott/logger v0.3.0
-	github.com/paularlott/scriptling v0.8.0
-	golang.org/x/net v0.54.0
-	tailscale.com v1.98.2
+	github.com/paularlott/scriptling v0.8.1
+	golang.org/x/net v0.55.0
+	tailscale.com v1.98.3
 )
 
 require (
@@ -20,12 +20,12 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.17 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
-	github.com/creachadair/msync v0.8.3 // indirect
-	github.com/dblohm7/wingoes v0.0.0-20250822163801-6d8e6105c62d // indirect
+	github.com/creachadair/msync v0.8.4 // indirect
+	github.com/dblohm7/wingoes v0.0.0-20260526185140-fb298caac7ca // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
-	github.com/gaissmai/bart v0.26.1 // indirect
-	github.com/go-json-experiment/json v0.0.0-20260505212615-e40f80bf6836 // indirect
+	github.com/gaissmai/bart v0.28.0 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260520185125-572e7c383686 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
@@ -39,15 +39,15 @@ require (
 	github.com/jsimonetti/rtnetlink v1.4.2 // indirect
 	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260330125221-c963978e514e // indirect
-	github.com/mdlayher/netlink v1.11.1 // indirect
-	github.com/mdlayher/socket v0.6.0 // indirect
+	github.com/mdlayher/netlink v1.11.2 // indirect
+	github.com/mdlayher/socket v0.6.1 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
-	github.com/paularlott/mcp v0.16.0 // indirect
+	github.com/paularlott/mcp v0.16.1 // indirect
 	github.com/paularlott/snapshotkv v0.3.0 // indirect
 	github.com/pires/go-proxyproto v0.12.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/safchain/ethtool v0.7.0 // indirect
-	github.com/shamaton/msgpack/v3 v3.1.0 // indirect
+	github.com/shamaton/msgpack/v3 v3.1.2 // indirect
 	github.com/shirou/gopsutil/v3 v3.24.5 // indirect
 	github.com/shoenig/go-m1cpu v0.2.1 // indirect
 	github.com/tailscale/certstore v0.1.1-0.20260409135935-3638fb84b77d // indirect
@@ -56,19 +56,19 @@ require (
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20251127225136-f19339b67368 // indirect
 	github.com/tailscale/wireguard-go v0.0.0-20260427181203-e3ac4a0afb4e // indirect
-	github.com/tklauser/go-sysconf v0.3.16 // indirect
-	github.com/tklauser/numcpus v0.11.0 // indirect
+	github.com/tklauser/go-sysconf v0.4.0 // indirect
+	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
-	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/exp v0.0.0-20260527015227-08cc5374adb3 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
