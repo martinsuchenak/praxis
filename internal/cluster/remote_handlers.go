@@ -184,3 +184,21 @@ func (n *Node) isBotRunning(name string) bool {
 	}
 	return false
 }
+
+func (n *Node) handleSwarmInfoReq(_ *gossip.Node, pkt *gossip.Packet) (interface{}, error) {
+	var req SwarmInfoRequest
+	if err := pkt.Unmarshal(&req); err != nil {
+		return &SwarmInfoReply{Error: "bad request: " + err.Error()}, nil
+	}
+
+	if !n.validAdminSecret(req.Secret) {
+		return &SwarmInfoReply{Error: "invalid secret"}, nil
+	}
+
+	allBots, err := n.ListAllBots()
+	if err != nil {
+		return &SwarmInfoReply{Error: "swarm info: " + err.Error()}, nil
+	}
+
+	return &SwarmInfoReply{Bots: allBots}, nil
+}

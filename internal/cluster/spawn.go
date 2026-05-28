@@ -25,26 +25,26 @@ func (n *Node) handleSpawnReq(_ *gossip.Node, pkt *gossip.Packet) (interface{}, 
 		return spawnError("unknown parent bot: " + req.ParentID), nil
 	}
 
-	// Scope inheritance: child scope must not exceed parent scope.
 	if err := bot.ValidateChildScope(parent.Config.Scope, req.Scope); err != nil {
 		return spawnError("scope violation: " + err.Error()), nil
 	}
 
-	// Workspace must be parent's own workspace or in parent's allowed_workspaces.
 	if req.Workspace != "" {
 		if !parentAllowsWorkspace(parent.Config, req.Workspace) {
 			return spawnError(fmt.Sprintf("workspace %q not allowed by parent", req.Workspace)), nil
 		}
 	}
 
-	// AllowedWorkspaces for the child must be a subset of parent's allowed_workspaces.
 	for _, w := range req.AllowedWorkspaces {
 		if !parentAllowsWorkspace(parent.Config, w) {
 			return spawnError(fmt.Sprintf("allowed_workspace %q not permitted by parent", w)), nil
 		}
 	}
 
-	// Inherit workspace path and secret from parent if child picks parent's workspace.
+	if req.Node != "" {
+		return n.forwardRemoteSpawn(&req)
+	}
+
 	var wsPath, wsSecret string
 	if req.Workspace == parent.Config.Workspace {
 		wsPath = parent.Config.WorkspacePath
@@ -91,6 +91,26 @@ func (n *Node) handleSpawnReq(_ *gossip.Node, pkt *gossip.Packet) (interface{}, 
 	})
 
 	return &SpawnReply{BotID: req.Name}, nil
+}
+
+func (n *Node) forwardRemoteSpawn(req *SpawnRequest) (interface{}, error) {
+	remoteCfg := &bot.BotConfig{
+		Name:              req.Name,
+		Goal:              req.Goal,
+		Model:             req.Model,
+		Thinking:          req.Thinking,
+		Brain:             req.Brain,
+		Workspace:         req.Workspace,
+		Scope:             req.Scope,
+		AllowedWorkspaces: req.AllowedWorkspaces,
+		Parent:            req.ParentID,
+	}
+
+	botID, err := n.SpawnRemote(req.Node, remoteCfg)
+	if err != nil {
+		return spawnError(err.Error()), nil
+	}
+	return &SpawnReply{BotID: botID}, nil
 }
 
 // parentAllowsWorkspace returns true if the child may use workspace w.

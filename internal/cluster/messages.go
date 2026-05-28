@@ -18,6 +18,7 @@ const (
 	TypeListBotsReq    = "list_bots_req"
 	TypeBotControlReq  = "bot_control_req"
 	TypeLogsReq        = "logs_req"
+	TypeSwarmInfoReq   = "swarm_info_req"
 )
 
 // botRequest is the discriminator header — only "type" is decoded first.
@@ -55,6 +56,7 @@ type SpawnRequest struct {
 	Scope             string   `msgpack:"scope,omitempty"`
 	AllowedWorkspaces []string `msgpack:"allowed_workspaces,omitempty"`
 	ParentID          string   `msgpack:"parent_id"`
+	Node              string   `msgpack:"node,omitempty"`
 	Secret            string   `msgpack:"_secret"`
 }
 
@@ -153,4 +155,25 @@ type LogsReply struct {
 	Content string `msgpack:"content"`
 	Offset  int64  `msgpack:"offset"`
 	Error   string `msgpack:"error,omitempty"`
+}
+
+type SwarmInfoRequest struct {
+	Type   string `msgpack:"type"`
+	Secret string `msgpack:"_secret"`
+}
+
+type SwarmBotEntry struct {
+	Name     string `msgpack:"name"`
+	Status   string `msgpack:"status"`
+	Model    string `msgpack:"model"`
+	Goal     string `msgpack:"goal"`
+	Thinking bool   `msgpack:"thinking"`
+	Running  bool   `msgpack:"running"`
+	Ticks    int64  `msgpack:"ticks"`
+	Node     string `msgpack:"node"`
+}
+
+type SwarmInfoReply struct {
+	Bots  []SwarmBotEntry `msgpack:"bots"`
+	Error string          `msgpack:"error,omitempty"`
 }

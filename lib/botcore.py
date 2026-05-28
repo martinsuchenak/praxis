@@ -1252,6 +1252,26 @@ def _list_bots(args):
     return json.dumps(result)
 
 
+def _swarm_info(_args):
+    watchdog = _find_watchdog()
+    if watchdog is None:
+        return json.dumps({"error": "watchdog not available"})
+    req_payload = {
+        "type": "swarm_info_req",
+    }
+    if GOSSIP_SECRET:
+        req_payload["_secret"] = GOSSIP_SECRET
+    try:
+        resp = cluster.send_request(watchdog["id"], GOSSIP_MSG, req_payload)
+        if resp is None:
+            return json.dumps({"error": "no response from watchdog"})
+        if resp.get("error"):
+            return json.dumps({"error": resp["error"]})
+        return json.dumps(resp.get("bots", []))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 def _list_hardware_nodes(_args):
     result = []
     seen = set()
@@ -1349,6 +1369,7 @@ def _spawn_bot(args):
     new_brain = args.get("brain") or default_brain
     new_model = args.get("model") or CONFIG["model"]
     new_thinking = args.get("thinking", thinking_enabled)
+    target_node = args.get("node", "")
 
     watchdog = _find_watchdog()
     if watchdog is None:
@@ -1364,6 +1385,8 @@ def _spawn_bot(args):
         "thinking": new_thinking,
         "_secret": GOSSIP_SECRET_OVERRIDE or "",
     }
+    if target_node:
+        req_payload["node"] = target_node
     if WORKSPACE_NAME:
         req_payload["workspace"] = WORKSPACE_NAME
     if BOT_SCOPE and BOT_SCOPE != "open":
@@ -1840,11 +1863,12 @@ tools.add("send_message", "Send a direct message to a bot by ID", {"recipient": 
 tools.add("complete_task", "Report task completion to your parent bot", {"parent_bot": "string", "result": "string", "task_id": "string?"}, _wrap_tool("complete_task", _complete_task))
 tools.add("read_messages", "Read your unread messages", {}, _wrap_tool("read_messages", _read_messages))
 tools.add("list_bots", "List all bots visible in the swarm", {}, _wrap_tool("list_bots", _list_bots))
+tools.add("swarm_info", "List all bots across all watchdog nodes in the cluster (name, status, model, goal, node)", {}, _wrap_tool("swarm_info", _swarm_info))
     tools.add("list_hardware_nodes", "Discover hardware nodes (ESP32, STM32, etc.) and their W3C Web of Things (WoT) peripherals. Each node exposes peripherals with properties (read/write) and actions (invoke). Call this first.", {}, _wrap_tool("list_hardware_nodes", _list_hardware_nodes))
     tools.add("read_property", "Read a W3C WoT property from a peripheral on a hardware node. Returns the current value.", {"node": "string", "peripheral": "string", "affordance": "string"}, _wrap_tool("read_property", _read_property))
     tools.add("write_property", "Write a value to a W3C WoT property on a peripheral. 'node' is the hardware node ID, 'peripheral' is the peripheral name, 'affordance' is the property name, 'value' is the new value.", {"node": "string", "peripheral": "string", "affordance": "string", "value": "string"}, _wrap_tool("write_property", _write_property))
     tools.add("invoke_action", "Invoke a W3C WoT action on a peripheral. 'node' is the hardware node ID, 'peripheral' is the peripheral name, 'affordance' is the action name. Optional 'input' for action parameters.", {"node": "string", "peripheral": "string", "affordance": "string", "input": "string?"}, _wrap_tool("invoke_action", _invoke_action))
-tools.add("spawn_bot", "Create a new autonomous child bot", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?", "thinking": "boolean?", "task_id": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
+tools.add("spawn_bot", "Create a new autonomous child bot (optionally on a remote node)", {"goal": "string", "name": "string?", "brain": "string?", "model": "string?", "thinking": "boolean?", "task_id": "string?", "node": "string?"}, _wrap_tool("spawn_bot", _spawn_bot))
 tools.add("spawn_hybrid", "Crossover your brain with another bot's to create a child", {"other_bot": "string", "goal": "string", "name": "string?", "model": "string?", "thinking": "boolean?"}, _wrap_tool("spawn_hybrid", _spawn_hybrid))
 tools.add("evolve_brain", "Rewrite your brain (hot memory, max 8 KB). Include a reason. Archive older content to warm memory first if brain is too large.", {"content": "string", "reason": "string?"}, _wrap_tool("evolve_brain", _evolve_brain))
 tools.add("recall_warm_memory", "Search warm memory (memory.md) for relevant content. Pass a query to filter, or omit to read all.", {"query": "string?"}, _wrap_tool("recall_warm_memory", _recall_warm_memory))

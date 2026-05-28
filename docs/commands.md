@@ -210,7 +210,7 @@ The watchdog joins the gossip cluster as `role=watchdog`. It:
 - Handles `spawn` requests sent by bots via gossip
 - Handles `terminate` requests from bots requesting self-termination
 - Handles `remote_spawn_req` from other watchdogs for cross-node spawning
-- Handles admin requests (`list_bots_req`, `bot_control_req`, `logs_req`) for remote bot management
+- Handles admin requests (`list_bots_req`, `bot_control_req`, `logs_req`, `swarm_info_req`) for remote bot management
 
 When `--seeds` is not provided, the watchdog auto-discovers peers on the local network via multicast.
 
@@ -235,6 +235,7 @@ Slash commands available in the TUI:
 | `/stop-all` | Graceful stop all running bots |
 | `/kill [bot]` | Immediate SIGTERM (defaults to selected) |
 | `/kill-all` | Kill all running bots |
+| `/kill-all-swarm` | Kill all running bots across ALL watchdog nodes |
 | `/restart [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [refresh=true] [message]` | Kill and restart with optional config and message |
 | `/restart-stale` | Restart all bots flagged as stale |
 | `/refresh [bot]` | Update bot.py from current template (restart to apply) |

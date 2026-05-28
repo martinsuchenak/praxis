@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"sync"
 
 	"praxis/internal/bot"
 )
@@ -111,4 +112,75 @@ func (n *Node) BotStats() (total, running int) {
 		}
 	}
 	return
+}
+
+func (n *Node) ListAllBots() ([]SwarmBotEntry, error) {
+	var allBots []SwarmBotEntry
+	localName := n.cfg.NodeName
+
+	localBots, err := n.manager.List()
+	if err != nil {
+		return nil, fmt.Errorf("list local bots: %w", err)
+	}
+	for _, b := range localBots {
+		allBots = append(allBots, SwarmBotEntry{
+			Name:     b.Config.Name,
+			Status:   b.State.Status,
+			Model:    b.Config.Model,
+			Goal:     b.Config.Goal,
+			Thinking: b.Config.Thinking,
+			Running:  n.isBotRunning(b.Config.Name),
+			Ticks:    b.State.TicksAlive(),
+			Node:     localName,
+		})
+	}
+
+	if n.cluster == nil {
+		return allBots, nil
+	}
+
+	peers := n.WatchdogPeers()
+	if len(peers) == 0 {
+		return allBots, nil
+	}
+	var (
+		mu   sync.Mutex
+		wg   sync.WaitGroup
+		errs []string
+	)
+
+	for _, peer := range peers {
+		wg.Add(1)
+		go func(peerName string) {
+			defer wg.Done()
+			remoteBots, err := n.ListRemoteBots(peerName)
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, peerName+": "+err.Error())
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			for _, b := range remoteBots {
+				allBots = append(allBots, SwarmBotEntry{
+					Name:     b.Name,
+					Status:   b.Status,
+					Model:    b.Model,
+					Goal:     b.Goal,
+					Thinking: b.Thinking,
+					Running:  b.Running,
+					Ticks:    b.Ticks,
+					Node:     peerName,
+				})
+			}
+			mu.Unlock()
+		}(peer.Name)
+	}
+	wg.Wait()
+
+	if len(errs) > 0 && len(allBots) == 0 {
+		return nil, fmt.Errorf("all peers failed: %v", errs)
+	}
+
+	return allBots, nil
 }

@@ -12,6 +12,10 @@ import (
 // SpawnRemote sends a remote_spawn_req to the watchdog identified by nodeName,
 // waits for the reply, and returns the bot ID of the newly created remote bot.
 func (n *Node) SpawnRemote(nodeName string, cfg *bot.BotConfig) (string, error) {
+	if n.cluster == nil {
+		return "", fmt.Errorf("cluster not started")
+	}
+
 	target := n.findWatchdogNode(nodeName)
 	if target == nil {
 		return "", fmt.Errorf("node %q not found in cluster", nodeName)

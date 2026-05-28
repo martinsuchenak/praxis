@@ -81,10 +81,10 @@ Secrets (`api_key`, `gossip_secret`) are never injected into the bot's CONFIG di
 
 ## Remote Bot Management
 
-Watchdogs can manage bots on remote nodes via gossip. Three admin message types (`list_bots_req`, `bot_control_req`, `logs_req`) allow the TUI and CLI to operate on any node in the cluster.
+Watchdogs can manage bots on remote nodes via gossip. Four admin message types (`list_bots_req`, `bot_control_req`, `logs_req`, `swarm_info_req`) allow the TUI and CLI to operate on any node in the cluster.
 
-- `internal/cluster/remote_handlers.go` — handlers for admin requests. All use `validAdminSecret()` which requires the GlobalSecret (NOT bot-level GossipSecret) — this prevents bots from invoking admin commands.
-- `internal/cluster/remote_client.go` — client methods used by TUI/CLI for remote operations.
+- `internal/cluster/remote_handlers.go` — handlers for admin requests (`handleListBotsReq`, `handleBotControlReq`, `handleLogsReq`, `handleSwarmInfoReq`). All use `validAdminSecret()` which requires the GlobalSecret (NOT bot-level GossipSecret) — this prevents bots from invoking admin commands.
+- `internal/cluster/remote_client.go` — client methods used by TUI/CLI for remote operations: `ListRemoteBots()`, `ListAllBots()`, `ControlRemoteBot()`, `FetchRemoteLogs()`, `BotStats()`.
 - Bot control actions: `start`, `stop`, `kill`, `restart`, `refresh`, `remove`.
 - Periodic bot count metadata (`bots_total`, `bots_running`) is published by each watchdog every 2s.
 

@@ -45,11 +45,12 @@ All inter-bot messages are sent via `gossip.send_to()`. Request/reply patterns u
 | `shell_req` | request/reply | Bot → watchdog command proxy — reply: `{"exit_code": ..., "stdout": ..., "stderr": ...}` |
 | `relay_req` | request/reply | Bot → watchdog cross-workspace relay — reply: `{"status": "relayed"}` or `{"error": ...}` |
 | `relayed_message` | one-way | Watchdog → bot cross-workspace message — contains `from`, `content` |
-| `spawn_req` | request/reply | Bot → watchdog spawn request — reply: `{"status": "spawned"}` or `{"error": ...}` |
+| `spawn_req` | request/reply | Bot → watchdog spawn request. When `node` field is set, the watchdog forwards it as `remote_spawn_req` to the target node. Reply: `{"status": "spawned"}` or `{"error": ...}` |
 | `remote_spawn_req` | request/reply | Watchdog → watchdog remote spawn — creates a bot on the target node |
 | `terminate_req` | request/reply | Bot → watchdog self-termination request — reply: `{"status": "terminated"}` or `{"error": ...}` |
 | `hardware_req` | request/reply | Bot requests the watchdog to route a command to a hardware device node. Fields: node, peripheral, affordance, operation, input. |
 | `list_bots_req` | request/reply | Watchdog → watchdog: list bots on a remote node. Requires GlobalSecret (admin-only). |
+| `swarm_info_req` | request/reply | Bot → watchdog: list all bots across the entire cluster (local + all remote watchdog peers). Requires GlobalSecret. Reply includes a `node` field per bot. |
 | `bot_control_req` | request/reply | Watchdog → watchdog: control a bot on a remote node (start/stop/kill/restart/refresh/remove). Requires GlobalSecret. |
 | `logs_req` | request/reply | Watchdog → watchdog: fetch recent log lines from a bot on a remote node. Requires GlobalSecret. |
 
@@ -90,7 +91,7 @@ Bots on different machines need the same secret in their `.env`.
 Two authentication functions exist:
 
 - `validSecret(botID, secret)` — accepts bot's own `GossipSecret` OR `GlobalSecret`. Used for bot-initiated requests (shell, spawn, terminate).
-- `validAdminSecret(secret)` — accepts `GlobalSecret` ONLY. Used for admin requests (list_bots, bot_control, logs). This prevents bots from using their own GossipSecret to invoke admin commands on remote nodes.
+- `validAdminSecret(secret)` — accepts `GlobalSecret` ONLY. Used for admin requests (list_bots, bot_control, logs, swarm_info). This prevents bots from using their own GossipSecret to invoke admin commands on remote nodes.
 
 Bot `GossipSecret` defaults to `GlobalSecret` at spawn time, ensuring bots can authenticate with the watchdog even without a workspace-specific secret.
 

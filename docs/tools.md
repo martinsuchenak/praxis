@@ -35,12 +35,13 @@ Files outside the bot's own directory are blocked by the scriptling `--allowed-p
 | `read_messages` | — | Drain the inbox (returns all pending messages). |
 | `complete_task` | `parent_bot`, `result`, `task_id?` | Report task completion to parent bot. Always allowed regardless of scope. |
 | `list_bots` | — | Live swarm view from gossip. Returns bot IDs, goals, scopes, and fitness. |
+| `swarm_info` | — | List all bots across all watchdog nodes in the cluster. Returns name, status, model, goal, thinking, running, ticks, and node for each bot. |
 
 ## Spawning
 
 | Tool | Parameters | Description |
 |---|---|---|
-| `spawn_bot` | `goal`, `name?`, `brain?`, `model?`, `thinking?`, `task_id?` | Create a child bot. Max 10 children per bot. |
+| `spawn_bot` | `goal`, `name?`, `brain?`, `model?`, `thinking?`, `task_id?`, `node?` | Create a child bot. Max 10 children per bot. Use `node` to spawn on a specific remote watchdog (discovered via `swarm_info`). |
 | `spawn_hybrid` | `other_bot`, `goal`, `name?`, `model?`, `thinking?` | Crossover with another bot's brain and spawn a child. |
 
 ## Cognition

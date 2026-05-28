@@ -99,6 +99,7 @@ func New(mgr *bot.Manager, pool *bot.RunnerPool, node *cluster.Node, sb sandbox.
 			bulkCmd("stop-all", "Stop all running bots [node=<n>]", func(args string) { d.cmdStopAll(strings.TrimSpace(args)) }, &bulkNodeCmds),
 			botCmd("kill", "Kill a bot immediately [bot] [node=<n>]", func(args string) { d.cmdKill(strings.TrimSpace(args)) }, &botNameCmds),
 			bulkCmd("kill-all", "Kill all running bots [node=<n>]", func(args string) { d.cmdKillAll(strings.TrimSpace(args)) }, &bulkNodeCmds),
+			{Name: "kill-all-swarm", Description: "Kill all running bots across ALL watchdog nodes in the cluster", Handler: func(_ string) { d.cmdKillAllSwarm() }},
 			botCmd("restart", "Kill and restart a bot [bot] [model=...] [thinking=true|false] [goal=...] [scope=...] [node=<n>] [msg]", func(args string) { d.cmdRestartWithConfig(strings.TrimSpace(args)) }, &botNameCmds),
 			{Name: "restart-stale", Description: "Restart all stale bots", Handler: func(_ string) { d.cmdRestartStale() }},
 			botCmd("refresh", "Update bot.py from current template [bot] [node=<n>]", func(args string) { d.cmdRefresh(strings.TrimSpace(args)) }, &botNameCmds),
@@ -1212,6 +1213,59 @@ func (d *Dashboard) cmdKillAll(args string) {
 		go func(n string) { _ = d.pool.Kill(n) }(name)
 	}
 	d.showInfo(fmt.Sprintf("killing %d bots", len(names)))
+}
+
+func (d *Dashboard) cmdKillAllSwarm() {
+	if d.node == nil {
+		d.cmdKillAll("")
+		return
+	}
+
+	var totalKilled int
+
+	bots, err := d.mgr.List()
+	if err != nil {
+		d.showInfo(fmt.Sprintf("error listing local bots: %v", err))
+		return
+	}
+	var localNames []string
+	for _, b := range bots {
+		if b.State.Status == bot.StatusRunning || b.State.Status == bot.StatusStarting {
+			localNames = append(localNames, b.Config.Name)
+		}
+	}
+	for _, name := range localNames {
+		go func(n string) { _ = d.pool.Kill(n) }(name)
+	}
+	totalKilled += len(localNames)
+
+	peers := d.node.WatchdogPeers()
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		errs  []string
+	)
+	for _, peer := range peers {
+		wg.Add(1)
+		go func(peerName string) {
+			defer wg.Done()
+			acted, err := d.node.ControlRemoteBotAll(peerName, "kill")
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", peerName, err))
+				return
+			}
+			totalKilled += acted
+		}(peer.Name)
+	}
+	wg.Wait()
+
+	msg := fmt.Sprintf("killed %d bots across all nodes", totalKilled)
+	if len(errs) > 0 {
+		msg += fmt.Sprintf(" (errors: %s)", strings.Join(errs, ", "))
+	}
+	d.showInfo(msg)
 }
 
 func (d *Dashboard) cmdRestartWithConfig(args string) {

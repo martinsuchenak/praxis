@@ -598,6 +598,60 @@ func TestHandleSpawnReqBadUnmarshal(t *testing.T) {
 	}
 }
 
+func TestHandleSpawnReqWithRemoteNode(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "parent", &bot.BotConfig{
+		Scope: bot.ScopeOpen,
+		Model: "gpt-4",
+	})
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &SpawnRequest{
+		ParentID: "parent",
+		Name:     "remote-child",
+		Goal:     "remote work",
+		Model:    "gpt-4",
+		Thinking: true,
+		Node:     "missing-node",
+	})
+	reply, err := n.handleSpawnReq(nil, pkt)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	sr := reply.(*SpawnReply)
+	if sr.Error == "" {
+		t.Error("expected error for remote spawn without gossip cluster")
+	}
+}
+
+func TestHandleSpawnReqWithRemoteNodeLocalFallback(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "parent", &bot.BotConfig{
+		Scope: bot.ScopeOpen,
+		Model: "gpt-4",
+	})
+	n := testNode(t, root, testutil.NewMockSandbox(), "")
+
+	pkt := testPacket(t, &SpawnRequest{
+		ParentID: "parent",
+		Name:     "local-child",
+		Goal:     "local work",
+		Model:    "gpt-4",
+		Thinking: true,
+	})
+	reply, err := n.handleSpawnReq(nil, pkt)
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	sr := reply.(*SpawnReply)
+	if sr.Error != "" {
+		t.Errorf("unexpected error: %s", sr.Error)
+	}
+	if sr.BotID != "local-child" {
+		t.Errorf("bot_id: got %q want %q", sr.BotID, "local-child")
+	}
+}
+
 func TestHandleRelayReqBadUnmarshal(t *testing.T) {
 	root := testutil.TempProject(t)
 	n := testNode(t, root, testutil.NewMockSandbox(), "")
@@ -1658,5 +1712,84 @@ func TestHandleBotMsgDispatchLogs(t *testing.T) {
 	}
 	if _, ok := resp.(*LogsReply); !ok {
 		t.Fatalf("expected LogsReply, got %T", resp)
+	}
+}
+
+func TestHandleBotMsgDispatchSwarmInfo(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, err := n.handleBotMsg(nil, testPacket(t, botRequest{Type: TypeSwarmInfoReq}))
+	if err != nil {
+		t.Fatalf("handleBotMsg: %v", err)
+	}
+	if _, ok := resp.(*SwarmInfoReply); !ok {
+		t.Fatalf("expected SwarmInfoReply, got %T", resp)
+	}
+}
+
+// --- handleSwarmInfoReq ---
+
+func TestHandleSwarmInfoReqSuccess(t *testing.T) {
+	root := testutil.TempProject(t)
+	testutil.TempBot(t, root, "bot1", &bot.BotConfig{Name: "bot1", Goal: "test goal", Model: "test-model"})
+	testutil.TempBot(t, root, "bot2", &bot.BotConfig{Name: "bot2", Goal: "other goal", Model: "other-model"})
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+	n.cfg.NodeName = "test-node"
+
+	resp, err := n.handleSwarmInfoReq(nil, testPacket(t, SwarmInfoRequest{Type: TypeSwarmInfoReq, Secret: "s3cret"}))
+	if err != nil {
+		t.Fatalf("handleSwarmInfoReq: %v", err)
+	}
+	reply, ok := resp.(*SwarmInfoReply)
+	if !ok {
+		t.Fatalf("expected SwarmInfoReply, got %T", resp)
+	}
+	if reply.Error != "" {
+		t.Fatalf("unexpected error: %s", reply.Error)
+	}
+	if len(reply.Bots) != 2 {
+		t.Fatalf("expected 2 bots, got %d", len(reply.Bots))
+	}
+	names := map[string]bool{}
+	for _, b := range reply.Bots {
+		names[b.Name] = true
+		if b.Node == "" {
+			t.Error("expected non-empty Node field")
+		}
+		if b.Name == "bot1" && b.Goal != "test goal" {
+			t.Errorf("bot1 goal = %q, want %q", b.Goal, "test goal")
+		}
+	}
+	if !names["bot1"] || !names["bot2"] {
+		t.Errorf("expected bot1 and bot2, got %v", names)
+	}
+}
+
+func TestHandleSwarmInfoReqInvalidSecret(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleSwarmInfoReq(nil, testPacket(t, SwarmInfoRequest{Type: TypeSwarmInfoReq, Secret: "wrong"}))
+	reply, ok := resp.(*SwarmInfoReply)
+	if !ok {
+		t.Fatalf("expected SwarmInfoReply, got %T", resp)
+	}
+	if reply.Error != "invalid secret" {
+		t.Errorf("error = %q, want invalid secret", reply.Error)
+	}
+}
+
+func TestHandleSwarmInfoReqBadUnmarshal(t *testing.T) {
+	root := testutil.TempProject(t)
+	n := testNode(t, root, testutil.NewMockSandbox(), "s3cret")
+
+	resp, _ := n.handleSwarmInfoReq(nil, testCorruptPacket(t))
+	reply, ok := resp.(*SwarmInfoReply)
+	if !ok {
+		t.Fatalf("expected SwarmInfoReply, got %T", resp)
+	}
+	if reply.Error == "" {
+		t.Error("expected error for bad payload")
 	}
 }
