@@ -6,7 +6,7 @@ All commands are run via the `praxis` binary. Global flags apply to all subcomma
 
 ```
 --dir           Praxis project directory (default: ., env: PRAXIS_DIR)
---log-level     Log level: trace|debug|info|warn|error (default: info)
+--log-level     Log level: trace|debug|info|warn|error (default: info). Also configurable via `praxis.toml` `[watchdog] log_level` or `BOT_LOG_LEVEL` env var.
 --log-format    Log format: console|json (default: console)
 ```
 
@@ -211,6 +211,8 @@ The watchdog joins the gossip cluster as `role=watchdog`. It:
 - Handles `terminate` requests from bots requesting self-termination
 - Handles `remote_spawn_req` from other watchdogs for cross-node spawning
 - Handles admin requests (`list_bots_req`, `bot_control_req`, `logs_req`, `swarm_info_req`) for remote bot management
+
+When `--log-level debug` (or `trace`) is set, the watchdog tails all running bots' `bot.log` files and streams new lines to its own logger, interleaving bot activity with watchdog logs. Each line is tagged with the bot name for easy filtering.
 
 When `--seeds` is not provided, the watchdog auto-discovers peers on the local network via multicast.
 

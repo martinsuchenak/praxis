@@ -299,3 +299,7 @@ func findWatchdogPeer(ctx context.Context, gc *gossip.Cluster, nodeName string) 
 	}
 	return nil, fmt.Errorf("watchdog node %q not found in cluster", nodeName)
 }
+
+func isDebugLevel(level string) bool {
+	return level == "debug" || level == "trace"
+}

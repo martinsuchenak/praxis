@@ -18,10 +18,11 @@ type contextKey string
 const appKey contextKey = "app"
 
 type AppContext struct {
-	Dir     string
-	Cfg     *config.Config
-	Logger  logger.Logger
-	Manager *bot.Manager
+	Dir      string
+	Cfg      *config.Config
+	Logger   logger.Logger
+	Manager  *bot.Manager
+	LogLevel string
 }
 
 func appCtx(ctx context.Context) *AppContext {
@@ -75,20 +76,28 @@ func Root() *cli.Command {
 				return nil, err
 			}
 
+			logLevel := cmd.GetString("log-level")
+			if logLevel == "" || logLevel == "info" {
+				if cfg.Watchdog.LogLevel != "" {
+					logLevel = cfg.Watchdog.LogLevel
+				}
+			}
+
 			log := logslog.New(logslog.Config{
-				Level:  cmd.GetString("log-level"),
+				Level:  logLevel,
 				Format: cmd.GetString("log-format"),
 				Writer: os.Stderr,
 			})
 
 			mgr := bot.NewManager(abs)
 			mgr.TemplateBytes = botcoreTemplate
-			app := &AppContext{
-				Dir:     abs,
-				Cfg:     cfg,
-				Logger:  log,
-				Manager: mgr,
-			}
+		app := &AppContext{
+			Dir:      abs,
+			Cfg:      cfg,
+			Logger:   log,
+			Manager:  mgr,
+			LogLevel: logLevel,
+		}
 			return context.WithValue(ctx, appKey, app), nil
 		},
 		Commands: []*cli.Command{

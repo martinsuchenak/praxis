@@ -41,8 +41,8 @@ Single Go binary (`main.go`) + embedded Python bot template (`lib/botcore.py`).
 | `lib/` | Python files embedded into bots at spawn. `botcore.py` is the bot runtime (tools, LLM loop, gossip). |
 
 **Key relationships**:
-- `AppContext` in `cmd/root.go` holds `*config.Config`, `*bot.Manager`, and logger. All subcommands access it via `appCtx(ctx)`.
-- Config resolution: CLI flags > env vars > `praxis.toml` > `~/.config/praxis/config.toml` > built-in defaults.
+- `AppContext` in `cmd/root.go` holds `*config.Config`, `*bot.Manager`, logger, and `LogLevel`. All subcommands access it via `appCtx(ctx)`.
+- Config resolution: CLI flags > env vars > `praxis.toml` > `~/.config/praxis/config.toml` > built-in defaults. `log_level` follows the same resolution: `--log-level` flag > `BOT_LOG_LEVEL` env > `[watchdog] log_level` in config.
 - `cmd/watchdog_flags.go` defines shared `watchdogFlags()` and `overlayWatchdogFlags()` used by both `watchdog` and `tui` commands.
 - `cluster.Node` has `*bot.Manager` but NOT `*bot.RunnerPool`. Bot lifecycle (start/stop/kill) flows through state files — cluster handlers set status, the `monitorBotStates` goroutine (in `cmd/watchdog.go`) detects changes and calls pool methods.
 - Bots are embedded scriptling scripts. The runner (`bot.Runner`) creates a scriptling VM, registers libraries (gossip, AI, shell, llm), and runs `botcore.py` in a tick loop.
@@ -161,6 +161,10 @@ Each bot has a `WatchdogNode` field in `BotConfig` set at spawn time to the owni
 - Monitor goroutine — stamps bots before first start
 
 Bots also get `GossipSecret` defaulted to `GlobalSecret` at spawn time so they can authenticate with the watchdog even without a workspace-specific secret.
+
+## Debug Log Tailing
+
+When `--log-level debug` (or `trace`) is set, the watchdog starts a `LogTailer` goroutine (`internal/bot/logtail.go`) that polls all running bots' `bot.log` files every 500ms and streams new lines to the structured logger at `Debug` level, tagged with the bot name. This provides a single interleaved view of all bot activity in the watchdog output. Enabled in `cmd/watchdog.go` when `isDebugLevel(app.LogLevel)` is true.
 
 ## Tailscale (tsnet)
 

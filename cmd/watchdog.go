@@ -98,6 +98,12 @@ func watchdogCmd() *cli.Command {
 
 			go monitorBotStates(runCtx, app.Manager, pool, node.LocalNodeName(), log)
 
+			if isDebugLevel(app.LogLevel) {
+				tailer := bot.NewLogTailer(app.Manager, log)
+				go tailer.Run(runCtx, pool)
+				log.Info("bot log tailing enabled (debug level)")
+			}
+
 			quit := make(chan os.Signal, 1)
 			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 			select {

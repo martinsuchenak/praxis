@@ -74,6 +74,7 @@ Secrets (`api_key`, `gossip_secret`) are never injected into the bot's CONFIG di
 - **Tick iteration cap** — `BOT_TICK_MAX_ITERATIONS` limits tool-call rounds per tick. Useful for slow models where shorter sessions reduce queuing pressure.
 - **Memory tool observability** — memory tools are registered manually (not via agent auto-registration) so they go through `_wrap_tool` for activity logging.
 - **Debug dumps** — when `BOT_LOG_VERBOSE=true`, each tick writes `debug/tick-N.md` with the full system prompt and tick message.
+- **Debug log tailing** — when `--log-level debug` (or `trace`) is set, the watchdog tails all running bots' `bot.log` files and streams new lines to its own logger at `Debug` level, tagged with the bot name. Provides a single interleaved view of all bot activity.
 - **`bot.py` is self-contained** — the model catalog, goal, and CONFIG are baked in at spawn. Child and migrated bots carry the full runtime forward.
 - **Consensus in background** — the LLM call for `consensus_req` runs in a `runtime.background()` goroutine and shares results back via a named `Queue` (30 s max). The gossip goroutine is never blocked indefinitely.
 - **Spawn limiting** — each bot can create at most 10 children.

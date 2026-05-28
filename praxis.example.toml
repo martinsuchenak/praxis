@@ -14,6 +14,7 @@ sandbox = "auto"                 # auto|bwrap|none
 # multicast_addr = ""            # Multicast group (default: 239.255.13.37)
 # multicast_port = 19373         # Multicast port
 # models_dir = ""                # Directory with .gguf files for local inference
+# log_level = ""                  # Log level: trace|debug|info|warn|error (default: info, env: BOT_LOG_LEVEL)
 
 [tsnet]
 # hostname = ""                  # Enable tsnet remote connectivity

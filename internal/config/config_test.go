@@ -279,6 +279,7 @@ func TestEnvOverrides(t *testing.T) {
 	t.Setenv("BOT_WATCHDOG_PORT", "8080")
 	t.Setenv("BOT_MODEL", "env-model")
 	t.Setenv("BOT_TICK_INTERVAL", "20")
+	t.Setenv("BOT_LOG_LEVEL", "debug")
 
 	cfg, err := Load(dir)
 	if err != nil {
@@ -293,6 +294,9 @@ func TestEnvOverrides(t *testing.T) {
 	}
 	if cfg.Bot.TickInterval != 20 {
 		t.Errorf("tick_interval = %d, want 20", cfg.Bot.TickInterval)
+	}
+	if cfg.Watchdog.LogLevel != "debug" {
+		t.Errorf("log_level = %q, want debug (env override)", cfg.Watchdog.LogLevel)
 	}
 }
 

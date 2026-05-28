@@ -35,6 +35,7 @@ type WatchdogConfig struct {
 	MulticastAddr string   `toml:"multicast_addr"`
 	MulticastPort int      `toml:"multicast_port"`
 	ModelsDir     string   `toml:"models_dir"`
+	LogLevel      string   `toml:"log_level"`
 }
 
 type TsnetConfig struct {
@@ -229,6 +230,7 @@ func applyEnvOverrides(cfg *Config) {
 	envStr("BOT_MULTICAST_ADDR", &cfg.Watchdog.MulticastAddr)
 	envInt("BOT_MULTICAST_PORT", &cfg.Watchdog.MulticastPort)
 	envStr("BOT_MODELS_DIR", &cfg.Watchdog.ModelsDir)
+	envStr("BOT_LOG_LEVEL", &cfg.Watchdog.LogLevel)
 	if v := os.Getenv("BOT_SEED_ADDRS"); v != "" {
 		cfg.Watchdog.Seeds = parseCSV(v)
 	}
