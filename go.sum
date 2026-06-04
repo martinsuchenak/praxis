@@ -131,6 +131,8 @@ github.com/lufia/plan9stats v0.0.0-20260330125221-c963978e514e h1:Q6MvJtQK/iRcRt
 github.com/lufia/plan9stats v0.0.0-20260330125221-c963978e514e/go.mod h1:autxFIvghDt3jPTLoqZ9OZ7s9qTGNAWmYCjVFWPX/zg=
 github.com/martinsuchenak/scriptling-llm-lib v0.0.6 h1:QCEDPX8PCqPIQ3HAnNyn9GE7T5I8HI8wt1dYvKjGFME=
 github.com/martinsuchenak/scriptling-llm-lib v0.0.6/go.mod h1:XS/ga1Y9mGqBULPeqwYIyqiIxq5GUn+PUjhc0Z+Qsio=
+github.com/martinsuchenak/scriptling-llm-lib v0.1.0 h1:ZRlgIk3OOu7d9q3nBPP3JReAc9JDTHvTjgZpTYNuhAQ=
+github.com/martinsuchenak/scriptling-llm-lib v0.1.0/go.mod h1:n3mc+IpBHgOBPvdkPsCnO7uuanA8wbuPxlzhbxfzyVY=
 github.com/mdlayher/genetlink v1.3.2 h1:KdrNKe+CTu+IbZnm/GVUMXSqBBLqcGpRDa0xkQy56gw=
 github.com/mdlayher/genetlink v1.3.2/go.mod h1:tcC3pkCrPUGIKKsCsp0B3AdaaKuHtaxoJRz3cc+528o=
 github.com/mdlayher/netlink v1.11.2 h1:HKh2jqe+omdSWcQ88nrT7INE61B0NXfiSPFdgL4YbNI=

@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/martinsuchenak/scriptling-llm-lib v0.0.6
+	github.com/martinsuchenak/scriptling-llm-lib v0.1.0
 	github.com/paularlott/cli v0.8.4
 	github.com/paularlott/gossip v0.12.6
 	github.com/paularlott/logger v0.3.0
