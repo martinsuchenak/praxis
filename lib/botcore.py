@@ -630,7 +630,7 @@ def _consensus_llm_call(question, model, b_url, a_key, queue_name):
     import scriptling.ai as _ai
     import scriptling.runtime.sync as _sync
     try:
-        _c = _ai.Client(b_url, api_key=a_key)
+        _c = _ai.Client(b_url, api_key=a_key, max_retries=2, retry_on_server_error=True, retry_on_rate_limit=False)
         _prompt, _extra = _apply_thinking(model, question, False)
         _kwargs = {"system_prompt": "Answer briefly and concisely in one sentence.", "max_tokens": 256}
         if _extra:
