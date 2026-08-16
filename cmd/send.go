@@ -9,7 +9,7 @@ import (
 
 	"github.com/paularlott/cli"
 	"github.com/paularlott/gossip"
-	"github.com/paularlott/gossip/codec"
+	"github.com/paularlott/gossip/codec/shamaton"
 )
 
 func sendCmd() *cli.Command {
@@ -73,7 +73,7 @@ func sendGossipMessage(ctx context.Context, botName, content, secret string, see
 	gcfg := gossip.DefaultConfig()
 	gcfg.BindAddr = bindAddr
 	gcfg.AdvertiseAddr = bindAddr
-	gcfg.MsgCodec = codec.NewVmihailencoMsgpackCodec()
+	gcfg.MsgCodec = shamaton.New()
 	gcfg.Transport = gossip.NewSocketTransport(gcfg)
 
 	gc, err := gossip.NewCluster(gcfg)

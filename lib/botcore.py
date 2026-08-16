@@ -2083,7 +2083,7 @@ bot_agent = agent.Agent(
     compaction_threshold=AGENT_COMPACTION_THRESHOLD,
     extra_body=_agent_extra_body,
 )
-bot_agent.request_timeout_ms = AGENT_REQUEST_TIMEOUT_MS
+bot_agent.request_timeout = AGENT_REQUEST_TIMEOUT_MS // 1000
 
 # --- Main loop ---
 _log("START", "bot started  model=" + model_name + "  scope=" + BOT_SCOPE + "  workspace=" + (WORKSPACE_PATH or "none"))

@@ -10,7 +10,7 @@ import (
 
 	"github.com/paularlott/cli"
 	"github.com/paularlott/gossip"
-	"github.com/paularlott/gossip/codec"
+	"github.com/paularlott/gossip/codec/shamaton"
 
 	"praxis/internal/cluster"
 	"praxis/internal/config"
@@ -264,7 +264,7 @@ func joinCluster(ctx context.Context, seeds []string) (*gossip.Cluster, error) {
 	gcfg := gossip.DefaultConfig()
 	gcfg.BindAddr = bindAddr
 	gcfg.AdvertiseAddr = advertiseAddr
-	gcfg.MsgCodec = codec.NewVmihailencoMsgpackCodec()
+	gcfg.MsgCodec = shamaton.New()
 	gcfg.Transport = gossip.NewSocketTransport(gcfg)
 
 	gc, err := gossip.NewCluster(gcfg)

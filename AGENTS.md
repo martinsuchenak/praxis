@@ -58,7 +58,7 @@ Single Go binary (`main.go`) + embedded Python bot template (`lib/botcore.py`).
 
 ## Gossip Codec
 
-The scriptling gossip library hardcodes `codec.NewVmihailencoMsgpackCodec()` at `extlibs/net/gossip/library.go:1194`. All cluster nodes must use msgpack. Do NOT switch to JSON codec — it will break bot-to-watchdog communication.
+The scriptling gossip library uses the shamaton msgpack codec (`shamaton.New()` at `extlibs/net/gossip/library.go`). The watchdog sets `gcfg.MsgCodec = shamaton.New()` to match — this is also gossip's `DefaultConfig()` default as of v0.20. All cluster nodes must use the same codec. Do NOT switch to JSON codec — it will break bot-to-watchdog communication.
 
 ## Bot Template System
 

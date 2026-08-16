@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/paularlott/gossip"
-	"github.com/paularlott/gossip/codec"
+	"github.com/paularlott/gossip/codec/shamaton"
 	"github.com/paularlott/logger"
 	"tailscale.com/tsnet"
 
@@ -109,7 +109,7 @@ func New(cfg Config, mgr *bot.Manager, sb sandbox.Sandbox, log logger.Logger) (*
 	gcfg := gossip.DefaultConfig()
 	gcfg.BindAddr = cfg.BindAddr
 	gcfg.AdvertiseAddr = cfg.AdvertiseAddr
-	gcfg.MsgCodec = codec.NewVmihailencoMsgpackCodec()
+	gcfg.MsgCodec = shamaton.New()
 	gcfg.Transport = gossip.NewSocketTransport(gcfg)
 	gcfg.Logger = log
 
