@@ -13,8 +13,8 @@ import (
 )
 
 type mockDebugLogger struct {
-	mu     sync.Mutex
-	lines  []string
+	mu    sync.Mutex
+	lines []string
 }
 
 func (m *mockDebugLogger) Debug(msg string, keysAndValues ...any) {

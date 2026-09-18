@@ -1241,9 +1241,9 @@ func (d *Dashboard) cmdKillAllSwarm() {
 
 	peers := d.node.WatchdogPeers()
 	var (
-		wg    sync.WaitGroup
-		mu    sync.Mutex
-		errs  []string
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []string
 	)
 	for _, peer := range peers {
 		wg.Add(1)

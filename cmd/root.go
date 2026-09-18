@@ -91,13 +91,13 @@ func Root() *cli.Command {
 
 			mgr := bot.NewManager(abs)
 			mgr.TemplateBytes = botcoreTemplate
-		app := &AppContext{
-			Dir:      abs,
-			Cfg:      cfg,
-			Logger:   log,
-			Manager:  mgr,
-			LogLevel: logLevel,
-		}
+			app := &AppContext{
+				Dir:      abs,
+				Cfg:      cfg,
+				Logger:   log,
+				Manager:  mgr,
+				LogLevel: logLevel,
+			}
 			return context.WithValue(ctx, appKey, app), nil
 		},
 		Commands: []*cli.Command{
