@@ -16,4 +16,5 @@ models/
 praxis.toml
 .vscode/settings.json
 .skopos-session
+.skopos/
 .tsnet
