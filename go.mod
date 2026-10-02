@@ -4,13 +4,13 @@ go 1.27.1
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/martinsuchenak/scriptling-llm-lib v0.1.4
+	github.com/martinsuchenak/scriptling-llm-lib v0.1.5
 	github.com/paularlott/cli v0.9.1
 	github.com/paularlott/gossip v0.22.0
 	github.com/paularlott/logger v0.3.0
-	github.com/paularlott/scriptling v0.25.2
+	github.com/paularlott/scriptling v0.27.3
 	golang.org/x/net v0.59.0
-	tailscale.com v1.102.4
+	tailscale.com v1.104.0
 )
 
 require (
@@ -22,7 +22,7 @@ require (
 	github.com/dblohm7/wingoes v0.0.0-20260526185140-fb298caac7ca // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
-	github.com/gaissmai/bart v0.29.1 // indirect
+	github.com/gaissmai/bart v0.30.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
@@ -34,13 +34,13 @@ require (
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.2 // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
+	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/lufia/plan9stats v0.0.0-20260802145828-341c2f0c90b5 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.7.0 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
 	github.com/paularlott/jsonrpc v0.2.0 // indirect
-	github.com/paularlott/mcp v0.26.0 // indirect
+	github.com/paularlott/mcp v0.30.1 // indirect
 	github.com/paularlott/snapshotkv v0.6.0 // indirect
 	github.com/pires/go-proxyproto v0.15.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20260916203055-22a1a467d9f0 // indirect
@@ -53,7 +53,7 @@ require (
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f // indirect
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc // indirect
 	github.com/tailscale/web-client-prebuilt v0.0.0-20260917222731-e0ed2d0d0fea // indirect
-	github.com/tailscale/wireguard-go v0.0.0-20260715223240-2e01ba5b00f0 // indirect
+	github.com/tailscale/wireguard-go v0.0.0-20260928213032-417aef361226 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
@@ -70,8 +70,8 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
+	golang.zx2c4.com/wireguard/windows v1.1.1 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8 // indirect
+	gvisor.dev/gvisor v0.0.0-20260915211658-a6f909f08a72 // indirect
 )
